@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PCP – Ordens de Produção</title>
+<link rel="stylesheet" href="estilo.css">
+<script>
+// Mostra qualquer erro de JavaScript na tela (ajuda a achar problemas no config.js)
+window.onerror = function(m){
+  function mostrar(){ var d = document.getElementById("erroGlobal") || document.body.insertAdjacentElement("afterbegin", Object.assign(document.createElement("div"), {id:"erroGlobal"}));
+    d.textContent = "Erro na página: " + m + " (confira o config.js)"; }
+  if(document.body) mostrar(); else document.addEventListener("DOMContentLoaded", mostrar);
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="login.js"></script>
+</head>
+<body>
+<header><h1>PCP – Ordens de Produção</h1><small id="usuario"></small></header>
+<main>
+<div id="painel" class="oculto">
+  <!-- LANÇAR OP -->
+  <div class="card">
+    <h2>Lançar nova OP</h2>
+    <div class="filtros">
+      <div><label>Número da OP</label><input id="numero" placeholder="Ex.: 1025"></div>
+      <div><label>Código da peça</label><input id="codigo" list="listaPecas" autocomplete="off" placeholder="Ex.: EX-025"></div>
+      <div><label>Quantidade</label><input id="quantidade" type="number" min="1" inputmode="numeric"></div>
+      <div><button class="btn-verde" id="btnLancar" style="margin:0">+ Lançar OP</button></div>
+    </div>
+    <datalist id="listaPecas"></datalist>
+    <div style="font-size:13px;color:#475467;margin-top:8px">Código novo é cadastrado no catálogo automaticamente (sem preço).</div>
+    <div id="msg"></div>
+  </div>
+
+  <!-- LISTA DE OPs -->
+  <div class="card">
+    <h2>OPs</h2>
+    <div class="filtros" style="margin-bottom:10px">
+      <div><label>Mostrar</label><select id="fStatus"><option value="Aberta">Abertas</option><option value="Concluída">Concluídas</option><option value="Cancelada">Canceladas</option><option value="">Todas</option></select></div>
+      <div><label>Buscar</label><input id="fBusca" placeholder="OP ou peça"></div>
+    </div>
+    <div class="rolagem"><table id="tOps"></table></div>
+  </div>
+</div>
+</main>
+
+<script>
+let ops = [];
+
+async function abrirPcp(){
+  const { data: cat } = await db.from("catalogo").select("codigo").order("codigo");
+  $("listaPecas").innerHTML = (cat || []).map(c => `<option value="${texto(c.codigo)}">`).join("");
+  await carregarOps();
+  setInterval(carregarOps, 30000);        // atualiza sozinho a cada 30 s
+}
+
+async function carregarOps(){
+  let q = db.from("vw_ops").select("*").order("criada_em", { ascending:false }).limit(500);
+  if($("fStatus").value) q = q.eq("status", $("fStatus").value);
+  const { data, error } = await q;
+  if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
+  ops = data;
+  desenhar();
+}
+
+function desenhar(){
+  const busca = $("fBusca").value.trim().toLowerCase();
+  const lista = ops.filter(o => !busca || o.op.toLowerCase().includes(busca) || o.peca.toLowerCase().includes(busca));
+  $("tOps").innerHTML = `<tr><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Produzida</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th class="n">Interrup.</th><th>Lançada</th><th></th></tr>` +
+    lista.map(o => `<tr>
+      <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td>
+      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_produzida ?? "–"}</td>
+      <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span></td>
+      <td>${texto(o.ultima_maquina ?? "–")}</td>
+      <td class="n">${horas(o.minutos_total)}</td><td class="n">${o.interrupcoes}</td>
+      <td>${dataHora(o.criada_em)}</td>
+      <td>${o.status === "Aberta" && o.situacao !== "Em execução"
+            ? `<button class="btn-vermelho" style="margin:0;padding:4px 10px;font-size:13px;width:auto" onclick="cancelar(${o.id})">Cancelar</button>` : ""}</td>
+    </tr>`).join("") +
+    (lista.length ? "" : `<tr><td colspan="10"><i>Nenhuma OP.</i></td></tr>`);
+}
+
+$("btnLancar").onclick = async () => {
+  const numero = $("numero").value.trim(), codigo = $("codigo").value.trim(), qtd = Number($("quantidade").value);
+  if(!numero || !codigo || !(qtd > 0)){ $("msg").innerHTML = `<div class="msg erro">Preencha OP, código e quantidade.</div>`; return; }
+  $("btnLancar").disabled = true;
+  const { error } = await db.rpc("criar_op", { p_numero: numero, p_codigo: codigo, p_quantidade: qtd });
+  $("btnLancar").disabled = false;
+  if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
+  $("msg").innerHTML = `<div class="msg ok">OP ${texto(numero)} lançada.</div>`;
+  $("numero").value = ""; $("quantidade").value = ""; $("numero").focus();
+  abrirPcpLista();
+};
+async function abrirPcpLista(){
+  const { data: cat } = await db.from("catalogo").select("codigo").order("codigo");
+  $("listaPecas").innerHTML = (cat || []).map(c => `<option value="${texto(c.codigo)}">`).join("");
+  carregarOps();
+}
+
+async function cancelar(id){
+  const op = ops.find(o => o.id === id);
+  if(!confirm(`Cancelar a OP ${op.op}?`)) return;
+  const { error } = await db.rpc("cancelar_op", { p_op: id });
+  if(error) alert(error.message);
+  carregarOps();
+}
+
+$("fStatus").onchange = carregarOps;
+$("fBusca").oninput = desenhar;
+protegerPagina(abrirPcp);
+</script>
+</body>
+</html>

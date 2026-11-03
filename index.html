@@ -3,116 +3,141 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Apontamento de Produção</title>
+<title>Apontamento por OP</title>
 <link rel="stylesheet" href="estilo.css">
+<script>
+// Mostra qualquer erro de JavaScript na tela (ajuda a achar problemas no config.js)
+window.onerror = function(m){
+  function mostrar(){ var d = document.getElementById("erroGlobal") || document.body.insertAdjacentElement("afterbegin", Object.assign(document.createElement("div"), {id:"erroGlobal"}));
+    d.textContent = "Erro na página: " + m + " (confira o config.js)"; }
+  if(document.body) mostrar(); else document.addEventListener("DOMContentLoaded", mostrar);
+};
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="config.js"></script>
 </head>
 <body>
 <header><h1 id="titulo">Apontamento</h1><small id="subtitulo">carregando...</small></header>
 <main>
-  <!-- TELA A: máquina EM ABERTO -> só mostra a operação atual e os botões de encerrar -->
+  <!-- TELA A: máquina com OP em andamento -->
   <div id="telaAberta" class="oculto">
     <div class="card aberto">
-      <h2>🟢 Operação em andamento</h2>
+      <h2>🟢 OP em andamento</h2>
       <div id="abertaTexto" style="font-size:18px;line-height:1.5"></div>
-      <button id="btnConcluir" class="btn-verde">✔ CONCLUÍDA (peça pronta)</button>
     </div>
     <div class="card">
-      <h2>Interromper (não conta peça)</h2>
+      <h2>Encerrar lote</h2>
+      <label for="qtdProduzida">Quantidade produzida</label>
+      <input id="qtdProduzida" type="number" min="0" inputmode="numeric">
+      <button id="btnEncerrar" class="btn-verde">✔ ENCERRAR LOTE</button>
+    </div>
+    <div class="card">
+      <h2>Interromper (a OP pode ser retomada depois)</h2>
       <select id="motivo">
-        <option>Fim de turno</option><option>Parada</option><option>Setup</option>
-        <option>Manutenção</option><option>Falta de material</option><option>Outro</option>
+        <option>Emergência</option><option>Fim de turno</option><option>Manutenção</option>
+        <option>Falta de material</option><option>Setup</option><option>Outro</option>
       </select>
-      <button id="btnInterromper" class="btn-vermelho">■ INTERROMPER</button>
+      <button id="btnInterromper" class="btn-vermelho">⏸ INTERROMPER</button>
     </div>
   </div>
 
-  <!-- TELA B: máquina LIVRE -> formulário para iniciar -->
+  <!-- TELA B: máquina livre -->
   <div id="telaLivre" class="card oculto">
-    <h2>⚪ Máquina livre – iniciar operação</h2>
-    <label for="operador">Operador</label><select id="operador"></select>
-    <label for="peca">Peça</label><select id="peca"></select>
-    <label for="operacao">Operação</label><select id="operacao"></select>
+    <h2>⚪ Máquina livre</h2>
+    <label for="operador">Operador</label>
+    <input id="operador" list="listaOperadores" autocomplete="off" placeholder="Seu nome">
+    <datalist id="listaOperadores"></datalist>
+    <label>Escolha a OP</label>
+    <div id="listaOps"></div>
     <button id="btnIniciar" class="btn-azul">▶ INICIAR</button>
   </div>
 
   <div id="msg"></div>
-
-  <!-- Como o celular é o mesmo, mostra também as OUTRAS máquinas -->
-  <div class="card" id="outrasCard"><h2>Outras máquinas</h2><div id="outras"></div></div>
+  <div class="card"><h2>Outras máquinas</h2><div id="outras"></div></div>
 </main>
 
 <script>
 // =====================================================================
-// 1) Conexão e qual máquina veio no QR Code  (index.html?m=MAQ1)
+// 1) Conexão e máquina do QR Code  (index.html?m=CNC1)
 // =====================================================================
 const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
 const maquina = new URLSearchParams(location.search).get("m");
 const $ = id => document.getElementById(id);
-let catalogo = [];
+let opsDisponiveis = [];
 
 function lembrar(k, v){ try{ localStorage.setItem(k, v) }catch(e){} }
 function lembrado(k){ try{ return localStorage.getItem(k) }catch(e){ return null } }
 function mensagem(t, tipo){ $("msg").innerHTML = t ? `<div class="msg ${tipo}">${t}</div>` : ""; }
 const hora = ts => new Date(ts).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
 const minutos = ts => Math.round((Date.now() - new Date(ts)) / 60000);
+const texto = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
 // =====================================================================
-// 2) Ao abrir: carrega a máquina, as listas e decide qual tela mostrar
+// 2) Ao abrir
 // =====================================================================
 async function iniciarTela(){
-  if(!maquina){ mensagem("QR Code inválido (falta ?m=CODIGO).","erro"); return; }
-  const { data: maq } = await db.from("maquinas").select("nome").eq("codigo", maquina).eq("ativa", true).maybeSingle();
+  if(!maquina){ mensagem("QR Code inválido (falta ?m=CODIGO).","erro"); $("subtitulo").textContent=""; return; }
+  const { data: maq, error } = await db.from("maquinas").select("nome").eq("codigo", maquina).eq("ativa", true).maybeSingle();
+  if(error){ mensagem("Erro de conexão: " + error.message, "erro"); return; }
   if(!maq){ mensagem(`Máquina "${maquina}" não cadastrada.`,"erro"); return; }
   $("titulo").textContent = maq.nome;
   $("subtitulo").textContent = "Código " + maquina;
 
-  const { data: ops } = await db.from("operadores").select("id,nome").eq("ativo", true).order("nome");
-  $("operador").innerHTML = ops.map(o => `<option value="${o.id}">${o.nome}</option>`).join("");
-  if(lembrado("operador")) $("operador").value = lembrado("operador");
-
-  const { data: cat } = await db.from("catalogo").select("id,peca,operacao").eq("ativo", true).order("peca");
-  catalogo = cat;
-  const pecas = [...new Set(cat.map(c => c.peca))];
-  $("peca").innerHTML = pecas.map(p => `<option>${p}</option>`).join("");
-  if(pecas.includes(lembrado("peca"))) $("peca").value = lembrado("peca");
-  montarOperacoes();
+  const { data: ops } = await db.from("operadores").select("nome").order("nome");
+  $("listaOperadores").innerHTML = (ops || []).map(o => `<option value="${texto(o.nome)}">`).join("");
+  $("operador").value = lembrado("operador") || "";
 
   await atualizar();
 }
 
-function montarOperacoes(){
-  const lista = catalogo.filter(c => c.peca === $("peca").value);
-  $("operacao").innerHTML = lista.map(c => `<option value="${c.id}">${c.operacao}</option>`).join("");
-  if(lista.some(c => String(c.id) === lembrado("catalogo"))) $("operacao").value = lembrado("catalogo");
-}
-$("peca").addEventListener("change", montarOperacoes);
-
 // =====================================================================
-// 3) A DECISÃO PRINCIPAL: esta máquina tem operação aberta?
-//    SIM -> tela A (encerrar)     NÃO -> tela B (iniciar)
+// 3) Decide a tela: esta máquina tem OP em andamento?
 // =====================================================================
 async function atualizar(){
-  const { data, error } = await db.rpc("apontamentos_abertos");
-  if(error){ mensagem("Erro ao consultar: " + error.message, "erro"); return; }
-
-  const minha  = data.find(a => a.maquina_codigo === maquina);   // a desta máquina
-  const outras = data.filter(a => a.maquina_codigo !== maquina);  // as demais
+  const { data: abertos, error } = await db.rpc("apontamentos_abertos");
+  if(error){ mensagem("Erro: " + error.message, "erro"); return; }
+  const minha  = abertos.find(a => a.maquina_codigo === maquina);
+  const outras = abertos.filter(a => a.maquina_codigo !== maquina);
 
   if(minha){
     $("abertaTexto").innerHTML =
-      `<b>${minha.peca}</b> – ${minha.operacao}<br>Operador: ${minha.operador}<br>Início ${hora(minha.inicio)} · há ${minutos(minha.inicio)} min`;
-    $("telaAberta").classList.remove("oculto");
-    $("telaLivre").classList.add("oculto");
+      `OP <b>${texto(minha.op)}</b> · Peça <b>${texto(minha.peca)}</b><br>Lote: ${minha.quantidade} peças<br>Operador: ${texto(minha.operador)}<br>Desde ${hora(minha.inicio)} · há ${minutos(minha.inicio)} min`;
+    $("qtdProduzida").value = minha.quantidade;          // já vem com a quantidade da OP
+    $("telaAberta").classList.remove("oculto"); $("telaLivre").classList.add("oculto");
   } else {
-    $("telaAberta").classList.add("oculto");
-    $("telaLivre").classList.remove("oculto");
+    await carregarOps();
+    $("telaAberta").classList.add("oculto"); $("telaLivre").classList.remove("oculto");
   }
 
   $("outras").innerHTML = outras.length
-    ? outras.map(a => `🟢 <b>${a.maquina}</b>: ${a.peca} – ${a.operacao} (${a.operador}, há ${minutos(a.inicio)} min)`).join("<br>")
-    : "Nenhuma outra máquina com operação aberta.";
+    ? outras.map(a => `🟢 <b>${texto(a.maquina)}</b>: OP ${texto(a.op)} – ${texto(a.peca)} (${texto(a.operador)}, há ${minutos(a.inicio)} min)`).join("<br>")
+    : "Nenhuma outra máquina em operação.";
+}
+
+// Lista as OPs que podem ser iniciadas (interrompidas aparecem primeiro)
+async function carregarOps(){
+  const { data, error } = await db.rpc("ops_disponiveis");
+  if(error){ mensagem("Erro: " + error.message, "erro"); return; }
+  opsDisponiveis = data;
+  if(!data.length){
+    $("listaOps").innerHTML = "<p>Nenhuma OP disponível. Fale com o PCP.</p>";
+    $("btnIniciar").disabled = true; return;
+  }
+  $("btnIniciar").disabled = false;
+  $("listaOps").innerHTML = data.map((o, i) => `
+    <label class="op-item"><input type="radio" name="op" value="${o.id}" ${i === 0 ? "checked" : ""}>
+      <b>OP ${texto(o.op)}</b> · ${texto(o.peca)} · ${o.quantidade} pç
+      ${o.situacao === "Interrompida" ? `<br><span class="tag t-Interrompida">⏸ Interrompida – retomar (${Math.round(o.minutos_total)} min feitos)</span>` : ""}
+    </label>`).join("");
+  atualizarBotao();
+  document.querySelectorAll('input[name="op"]').forEach(r => r.onchange = atualizarBotao);
+}
+
+// O botão diz INICIAR ou RETOMAR conforme a OP escolhida
+function atualizarBotao(){
+  const id = Number(document.querySelector('input[name="op"]:checked')?.value);
+  const op = opsDisponiveis.find(o => o.id === id);
+  $("btnIniciar").textContent = op && op.situacao === "Interrompida" ? "▶ RETOMAR" : "▶ INICIAR";
 }
 
 // =====================================================================
@@ -127,21 +152,30 @@ async function executar(botao, chamada, textoOk){
 }
 
 $("btnIniciar").onclick = () => {
-  lembrar("operador", $("operador").value); lembrar("peca", $("peca").value); lembrar("catalogo", $("operacao").value);
+  const operador = $("operador").value.trim();
+  const opId = Number(document.querySelector('input[name="op"]:checked')?.value);
+  if(!operador){ mensagem("Informe o nome do operador.", "erro"); return; }
+  if(!opId){ mensagem("Escolha uma OP.", "erro"); return; }
+  lembrar("operador", operador);
   executar($("btnIniciar"),
-    () => db.rpc("iniciar_apontamento", { p_maquina: maquina, p_operador: Number($("operador").value), p_catalogo: Number($("operacao").value) }),
-    `▶ Operação iniciada às ${hora(new Date())}.`);
+    () => db.rpc("iniciar_apontamento", { p_maquina: maquina, p_operador: operador, p_op: opId }),
+    `▶ OP iniciada às ${hora(new Date())}.`);
 };
 
-$("btnConcluir").onclick = () => executar($("btnConcluir"),
-  () => db.rpc("encerrar_apontamento", { p_maquina: maquina, p_concluida: true }),
-  "✔ Peça concluída e registrada.");
+$("btnEncerrar").onclick = () => {
+  const qtd = Number($("qtdProduzida").value);
+  if($("qtdProduzida").value === "" || qtd < 0){ mensagem("Informe a quantidade produzida.", "erro"); return; }
+  if(!confirm(`Encerrar o lote com ${qtd} peças? A OP será concluída.`)) return;
+  executar($("btnEncerrar"),
+    () => db.rpc("encerrar_lote", { p_maquina: maquina, p_quantidade: qtd }),
+    `✔ Lote encerrado com ${qtd} peças.`);
+};
 
 $("btnInterromper").onclick = () => {
-  if(!confirm("Interromper a operação? Ela NÃO contará como peça pronta.")) return;
+  if(!confirm("Interromper a OP? Ela poderá ser retomada depois.")) return;
   executar($("btnInterromper"),
-    () => db.rpc("encerrar_apontamento", { p_maquina: maquina, p_concluida: false, p_motivo: $("motivo").value }),
-    "■ Operação interrompida.");
+    () => db.rpc("interromper_apontamento", { p_maquina: maquina, p_motivo: $("motivo").value }),
+    "⏸ OP interrompida. Para continuar, leia o QR e escolha RETOMAR.");
 };
 
 iniciarTela();

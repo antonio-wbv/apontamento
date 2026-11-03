@@ -5,150 +5,167 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Relatório de Produção</title>
 <link rel="stylesheet" href="estilo.css">
+<script>
+// Mostra qualquer erro de JavaScript na tela (ajuda a achar problemas no config.js)
+window.onerror = function(m){
+  function mostrar(){ var d = document.getElementById("erroGlobal") || document.body.insertAdjacentElement("afterbegin", Object.assign(document.createElement("div"), {id:"erroGlobal"}));
+    d.textContent = "Erro na página: " + m + " (confira o config.js)"; }
+  if(document.body) mostrar(); else document.addEventListener("DOMContentLoaded", mostrar);
+};
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="config.js"></script>
+<script src="login.js"></script>
 </head>
 <body>
 <header><h1>Relatório de Produção – Usinagem</h1><small id="usuario"></small></header>
 <main>
-  <!-- LOGIN (só o gestor vê os dados) -->
-  <div class="card" id="loginCard" style="max-width:420px;margin:30px auto">
-    <h2>Entrar</h2>
-    <label>E-mail</label><input id="email" type="email">
-    <label>Senha</label><input id="senha" type="password">
-    <button class="btn-azul" id="btnLogin">Entrar</button>
-    <div id="loginMsg"></div>
+<div id="painel" class="oculto">
+  <div class="card filtros">
+    <div><label>Data inicial</label><input type="date" id="dIni"></div>
+    <div><label>Data final</label><input type="date" id="dFim"></div>
+    <div><label>Turno</label><select id="fTurno"><option>Todos</option><option>Manhã</option><option>Tarde</option><option>Noite</option><option>Fora de turno</option></select></div>
+    <div><label>Máquina</label><select id="fMaq"><option value="">Todas</option></select></div>
+    <div><button class="btn-azul" id="btnFiltrar" style="margin:0">Filtrar</button></div>
+    <div><button class="btn-verde" id="btnCsv" style="margin:0">Exportar CSV</button></div>
+  </div>
+  <div style="font-size:13px;color:#475467;margin:-6px 0 12px">A produção entra no dia, turno e máquina em que o lote foi <b>encerrado</b>.</div>
+
+  <div class="kpis">
+    <div class="kpi">Lotes encerrados<b id="kLotes">0</b></div>
+    <div class="kpi">Peças produzidas<b id="kPecas">0</b></div>
+    <div class="kpi">Valor total<b id="kValor">R$ 0,00</b></div>
+    <div class="kpi">Tempo médio por peça<b id="kTempo">–</b></div>
+    <div class="kpi">Interrupções<b id="kInt">0</b></div>
+    <div class="kpi">Peças sem preço<b id="kSemPreco">0</b></div>
   </div>
 
-  <div id="painel" class="oculto">
-    <div class="card filtros">
-      <div><label>Data inicial</label><input type="date" id="dIni"></div>
-      <div><label>Data final</label><input type="date" id="dFim"></div>
-      <div><label>Turno</label><select id="fTurno"><option>Todos</option><option>Manhã</option><option>Tarde</option><option>Noite</option><option>Fora de turno</option></select></div>
-      <div><label>Máquina</label><select id="fMaq"><option value="">Todas</option></select></div>
-      <div><button class="btn-azul" id="btnFiltrar" style="margin:0">Filtrar</button></div>
-      <div><button class="btn-verde" id="btnCsv" style="margin:0">Exportar CSV</button></div>
-    </div>
-
-    <div class="kpis">
-      <div class="kpi">Peças concluídas<b id="kQtd">0</b></div>
-      <div class="kpi">Valor total<b id="kValor">R$ 0,00</b></div>
-      <div class="kpi">Tempo médio por peça<b id="kTempo">–</b></div>
-      <div class="kpi">Em aberto agora<b id="kAberto">0</b></div>
-      <div class="kpi">Interrupções<b id="kInt">0</b></div>
-    </div>
-
-    <div class="card" style="margin-top:14px"><h2>Por peça e operação</h2><div class="rolagem"><table id="tPeca"></table></div></div>
-    <div class="card"><h2>Por turno e máquina</h2><div class="rolagem"><table id="tTurno"></table></div></div>
-    <div class="card"><h2>Apontamentos (detalhe)</h2><div class="rolagem"><table id="tDet"></table></div></div>
-    <button class="btn-vermelho" id="btnSair" style="max-width:200px">Sair</button>
+  <div class="card" style="margin-top:14px"><h2>Por peça</h2><div class="rolagem"><table id="tPeca"></table></div></div>
+  <div class="card"><h2>Por turno e máquina</h2><div class="rolagem"><table id="tTurno"></table></div></div>
+  <div class="card"><h2>Lotes encerrados</h2><div class="rolagem"><table id="tLotes"></table></div></div>
+  <div class="card"><h2>Interrupções no período</h2><div class="rolagem"><table id="tInt"></table></div></div>
+  <div class="card">
+    <h2>Preços por peça</h2>
+    <div style="font-size:13px;color:#475467;margin-bottom:8px">Peças sem preço aparecem primeiro, em amarelo. Digite o valor unitário e clique em Salvar.</div>
+    <div class="rolagem"><table id="tPrecos"></table></div>
   </div>
+</div>
 </main>
 
 <script>
-const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
-const $ = id => document.getElementById(id);
-const brl = v => v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
-const dataHora = ts => ts ? new Date(ts).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "<i>em aberto</i>";
-let linhas = [];   // resultado do último filtro
+let lotes = [], interrupcoes = [];
 
-// ---------- LOGIN ----------
-$("btnLogin").onclick = async () => {
-  const { error } = await db.auth.signInWithPassword({ email: $("email").value, password: $("senha").value });
-  if(error) $("loginMsg").innerHTML = `<div class="msg erro">${error.message}</div>`; else abrirPainel();
-};
-$("btnSair").onclick = async () => { await db.auth.signOut(); location.reload(); };
-
-async function abrirPainel(){
-  const { data:{ user } } = await db.auth.getUser();
-  if(!user) return;
-  $("usuario").textContent = user.email;
-  $("loginCard").classList.add("oculto"); $("painel").classList.remove("oculto");
-
-  // Período padrão = mês atual
-  const hoje = new Date(), iso = d => d.toISOString().slice(0,10);
+async function abrirRelatorio(){
+  const hoje = new Date(), iso = d => d.toLocaleDateString("sv-SE");   // AAAA-MM-DD no fuso local
   $("dIni").value = iso(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
   $("dFim").value = iso(hoje);
-
   const { data: maqs } = await db.from("maquinas").select("codigo,nome").order("codigo");
-  maqs.forEach(m => $("fMaq").insertAdjacentHTML("beforeend", `<option value="${m.codigo}">${m.nome}</option>`));
-  filtrar();
+  maqs.forEach(m => $("fMaq").insertAdjacentHTML("beforeend", `<option value="${texto(m.codigo)}">${texto(m.nome)}</option>`));
+  filtrar(); carregarPrecos();
 }
 
-// ---------- BUSCA COM FILTROS ----------
-async function filtrar(){
-  linhas = [];
-  // O Supabase devolve no máx. 1000 linhas por vez: buscamos em "páginas"
+// Busca em "páginas" de 1000 linhas (limite do Supabase)
+async function buscarTudo(montarConsulta){
+  let tudo = [];
   for(let de = 0; ; de += 1000){
-    let q = db.from("vw_apontamentos").select("*")
-              .gte("data_turno", $("dIni").value).lte("data_turno", $("dFim").value)
-              .order("inicio", { ascending:false }).range(de, de + 999);
-    if($("fTurno").value !== "Todos") q = q.eq("turno", $("fTurno").value);
-    if($("fMaq").value)               q = q.eq("maquina_codigo", $("fMaq").value);
-    const { data, error } = await q;
-    if(error){ alert(error.message); return; }
-    linhas = linhas.concat(data);
-    if(data.length < 1000) break;
+    const { data, error } = await montarConsulta().range(de, de + 999);
+    if(error){ alert(error.message); return tudo; }
+    tudo = tudo.concat(data);
+    if(data.length < 1000) return tudo;
   }
+}
+
+async function filtrar(){
+  const turno = $("fTurno").value, maq = $("fMaq").value;
+  lotes = await buscarTudo(() => {
+    let q = db.from("vw_ops").select("*").eq("status", "Concluída")
+              .gte("data_turno_conclusao", $("dIni").value).lte("data_turno_conclusao", $("dFim").value)
+              .order("concluida_em", { ascending:false });
+    if(turno !== "Todos") q = q.eq("turno_conclusao", turno);
+    if(maq) q = q.eq("ultima_maquina_codigo", maq);
+    return q;
+  });
+  interrupcoes = await buscarTudo(() => {
+    let q = db.from("vw_apontamentos").select("*").not("fim", "is", null).neq("motivo_fim", "Lote encerrado")
+              .gte("data_turno", $("dIni").value).lte("data_turno", $("dFim").value)
+              .order("inicio", { ascending:false });
+    if(turno !== "Todos") q = q.eq("turno", turno);
+    if(maq) q = q.eq("maquina_codigo", maq);
+    return q;
+  });
   desenhar();
 }
 
-// Agrupa linhas por uma "chave" e soma quantidade, valor e minutos
-function agrupar(chaveFn){
+// Soma por uma chave (ex.: peça, ou turno+máquina)
+function agrupar(chave){
   const g = {};
-  for(const l of linhas){
-    const k = chaveFn(l);
-    g[k] ??= { qtd:0, valor:0, min:0, nFech:0 };
-    g[k].qtd   += l.quantidade;
-    g[k].valor += Number(l.valor);
-    if(l.quantidade > 0){ g[k].min += Number(l.minutos); g[k].nFech++; }   // tempo médio só das peças CONCLUÍDAS
+  for(const l of lotes){
+    const k = chave(l);
+    g[k] ??= { lotes:0, pecas:0, valor:0, min:0 };
+    g[k].lotes++; g[k].pecas += l.quantidade_produzida; g[k].valor += Number(l.valor); g[k].min += Number(l.minutos_total);
   }
   return g;
 }
-const media = o => o.nFech ? (o.min / o.nFech).toFixed(1) + " min" : "–";
+const porPeca = o => o.pecas ? (o.min / o.pecas).toFixed(1) + " min" : "–";
 
 function desenhar(){
-  const tot = agrupar(() => "total").total || { qtd:0, valor:0, min:0, nFech:0 };
-  $("kQtd").textContent = tot.qtd;
-  $("kValor").textContent = brl(tot.valor);
-  $("kTempo").textContent = media(tot);
-  $("kAberto").textContent = linhas.filter(l => l.em_aberto).length;
-  $("kInt").textContent = linhas.filter(l => !l.em_aberto && l.quantidade === 0).length;
+  const t = agrupar(() => "t").t || { lotes:0, pecas:0, valor:0, min:0 };
+  $("kLotes").textContent = t.lotes;
+  $("kPecas").textContent = t.pecas.toLocaleString("pt-BR");
+  $("kValor").textContent = brl(t.valor);
+  $("kTempo").textContent = porPeca(t);
+  $("kInt").textContent = interrupcoes.length;
 
-  const gp = agrupar(l => l.peca + "|" + l.operacao);
-  $("tPeca").innerHTML = `<tr><th>Peça</th><th>Operação</th><th class="n">Qtd</th><th class="n">Valor</th><th class="n">Tempo médio</th></tr>` +
-    Object.entries(gp).sort((a,b) => b[1].valor - a[1].valor).map(([k,o]) => { const [p,op] = k.split("|");
-      return `<tr><td>${p}</td><td>${op}</td><td class="n">${o.qtd}</td><td class="n">${brl(o.valor)}</td><td class="n">${media(o)}</td></tr>` }).join("");
+  const linha = (cols) => `<tr>${cols.map(c => `<td${typeof c === "number" || /^R\$|min$|h\d/.test(c) ? ' class="n"' : ""}>${c}</td>`).join("")}</tr>`;
 
-  const gt = agrupar(l => l.turno + "|" + l.maquina);
-  $("tTurno").innerHTML = `<tr><th>Turno</th><th>Máquina</th><th class="n">Qtd</th><th class="n">Valor</th><th class="n">Tempo médio</th></tr>` +
-    Object.entries(gt).sort().map(([k,o]) => { const [t,m] = k.split("|");
-      return `<tr><td>${t}</td><td>${m}</td><td class="n">${o.qtd}</td><td class="n">${brl(o.valor)}</td><td class="n">${media(o)}</td></tr>` }).join("");
+  const gp = agrupar(l => l.peca);
+  $("tPeca").innerHTML = `<tr><th>Peça</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">Valor</th><th class="n">Tempo total</th><th class="n">Tempo/peça</th></tr>` +
+    Object.entries(gp).sort((a,b) => b[1].valor - a[1].valor || b[1].pecas - a[1].pecas)
+      .map(([k,o]) => linha([texto(k), o.lotes, o.pecas, brl(o.valor), horas(o.min), porPeca(o)])).join("");
 
-  $("tDet").innerHTML = `<tr><th>Data turno</th><th>Turno</th><th>Máquina</th><th>Operador</th><th>Peça</th><th>Operação</th><th>Início</th><th>Fim</th><th class="n">Min</th><th class="n">Valor</th><th>Motivo fim</th></tr>` +
-    linhas.slice(0,500).map(l => `<tr><td>${l.data_turno.split("-").reverse().join("/")}</td><td>${l.turno}</td><td>${l.maquina}</td><td>${l.operador}</td><td>${l.peca}</td><td>${l.operacao}</td><td>${dataHora(l.inicio)}</td><td>${dataHora(l.fim)}</td><td class="n">${l.minutos}</td><td class="n">${brl(Number(l.valor))}</td><td>${l.motivo_fim ?? ""}</td></tr>`).join("") +
-    (linhas.length > 500 ? `<tr><td colspan="11"><i>Mostrando 500 de ${linhas.length}. Use Exportar CSV para ver tudo.</i></td></tr>` : "");
+  const gt = agrupar(l => l.turno_conclusao + "|" + l.ultima_maquina);
+  $("tTurno").innerHTML = `<tr><th>Turno</th><th>Máquina</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">Valor</th></tr>` +
+    Object.entries(gt).sort().map(([k,o]) => { const [tu,m] = k.split("|"); return linha([tu, texto(m), o.lotes, o.pecas, brl(o.valor)]); }).join("");
+
+  $("tLotes").innerHTML = `<tr><th>Encerrado</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Produzida</th><th class="n">Preço</th><th class="n">Valor</th><th class="n">Tempo</th><th class="n">Interrup.</th></tr>` +
+    lotes.slice(0,500).map(l => linha([dataHora(l.concluida_em), l.turno_conclusao, texto(l.ultima_maquina), texto(l.op), texto(l.peca), l.quantidade, l.quantidade_produzida,
+      l.preco === null ? '<span class="tag t-Interrompida">sem preço</span>' : brl(l.preco), brl(l.valor), horas(l.minutos_total), l.interrupcoes])).join("");
+
+  $("tInt").innerHTML = `<tr><th>Início</th><th>Fim</th><th>Máquina</th><th>OP</th><th>Peça</th><th>Operador</th><th class="n">Minutos</th><th>Motivo</th></tr>` +
+    interrupcoes.slice(0,500).map(a => linha([dataHora(a.inicio), dataHora(a.fim), texto(a.maquina), texto(a.op), texto(a.peca), texto(a.operador), Number(a.minutos), texto(a.motivo_fim)])).join("");
 }
 
-// ---------- EXPORTAR PARA EXCEL (CSV com ;) ----------
+// ---------- PREÇOS ----------
+async function carregarPrecos(){
+  const { data, error } = await db.from("catalogo").select("id,codigo,preco");
+  if(error){ alert(error.message); return; }
+  data.sort((a,b) => (a.preco !== null) - (b.preco !== null) || a.codigo.localeCompare(b.codigo));
+  $("kSemPreco").textContent = data.filter(c => c.preco === null).length;
+  $("tPrecos").innerHTML = `<tr><th>Código da peça</th><th>Preço unitário (R$)</th><th></th></tr>` +
+    data.map(c => `<tr style="${c.preco === null ? "background:#fff7d6" : ""}"><td>${texto(c.codigo)}</td>
+      <td><input id="preco${c.id}" type="number" step="0.01" min="0" value="${c.preco ?? ""}" style="width:130px;padding:6px"></td>
+      <td><button class="btn-azul" style="margin:0;padding:6px 12px;font-size:14px;width:auto" onclick="salvarPreco(${c.id})">Salvar</button></td></tr>`).join("");
+}
+async function salvarPreco(id){
+  const v = $("preco" + id).value;
+  const { error } = await db.from("catalogo").update({ preco: v === "" ? null : Number(v) }).eq("id", id);
+  if(error){ alert(error.message); return; }
+  carregarPrecos(); filtrar();
+}
+
+// ---------- CSV (abre no Excel) ----------
 $("btnCsv").onclick = () => {
-  const cols = ["data_turno","turno","maquina","operador","peca","operacao","quantidade","preco_unitario","valor","inicio","fim","minutos","motivo_fim"];
-  const numericas = ["quantidade","preco_unitario","valor","minutos"];
-  const celula = (l,c) => {
-    if(l[c] == null) return "";
-    if(numericas.includes(c)) return String(l[c]).replace(".", ",");      // vírgula decimal p/ Excel BR
-    if(c === "inicio" || c === "fim") return new Date(l[c]).toLocaleString("pt-BR");
-    return String(l[c]);
-  };
-  const txt = [cols.join(";")].concat(linhas.map(l => cols.map(c => celula(l,c)).join(";"))).join("\n");
+  const cab = ["Encerrado","Turno","Data turno","Máquina","OP","Peça","Qtd OP","Produzida","Preço","Valor","Minutos","Interrupções"];
+  const num = v => v == null ? "" : String(v).replace(".", ",");
+  const linhas = lotes.map(l => [new Date(l.concluida_em).toLocaleString("pt-BR"), l.turno_conclusao, l.data_turno_conclusao, l.ultima_maquina, l.op, l.peca,
+    l.quantidade, l.quantidade_produzida, num(l.preco), num(l.valor), num(l.minutos_total), l.interrupcoes].join(";"));
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob(["﻿" + txt], { type:"text/csv" }));
-  a.download = `producao_${$("dIni").value}_a_${$("dFim").value}.csv`;
+  a.href = URL.createObjectURL(new Blob(["﻿" + [cab.join(";")].concat(linhas).join("\n")], { type:"text/csv" }));
+  a.download = `lotes_${$("dIni").value}_a_${$("dFim").value}.csv`;
   a.click();
 };
 $("btnFiltrar").onclick = filtrar;
-
-abrirPainel();   // se já estiver logado, entra direto
+protegerPagina(abrirRelatorio);
 </script>
 </body>
 </html>

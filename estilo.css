@@ -24,3 +24,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{padding:8px;border-bottom:1px solid var(--borda);text-align:left;white-space:nowrap}
 th{background:var(--cinza)} td.n,th.n{text-align:right}
 .rolagem{overflow-x:auto}
+.op-item{display:block;border:2px solid var(--borda);border-radius:10px;padding:12px;margin-top:10px;cursor:pointer;font-weight:400}
+.op-item input{width:auto;margin-right:8px;transform:scale(1.3)}
+.op-item:has(input:checked){border-color:var(--azul);background:#eef2fa}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700}
+.t-Aguardando{background:#eaecf0;color:#344054} .t-Em{background:#d1fadf;color:#05603a}
+.t-Interrompida{background:#fef0c7;color:#93370d} .t-Concluída{background:#d1e9ff;color:#1849a9} .t-Cancelada{background:#fee4e2;color:#b42318}
+#erroGlobal{background:#b42318;color:#fff;padding:12px 16px;font-weight:700}
