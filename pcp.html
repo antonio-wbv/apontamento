@@ -21,6 +21,38 @@ window.onerror = function(m){
 <header class="com-logo"><img src="logo.png" alt="Applic Technology"><div><h1>PCP – Ordens de Produção</h1><small id="usuario"></small></div></header>
 <main>
 <div id="painel" class="oculto">
+  <!-- ===================== DASHBOARD ===================== -->
+  <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+    <h2 style="margin:0;font-size:20px;color:var(--azul)">Cronograma de usinagem</h2>
+    <small style="color:#475467">Seg a sex · turnos 07h–06h30 · hora-máquina R$ <span id="hm"></span> · atualizado <span id="atualizado"></span></small>
+  </div>
+  <div class="kpis" id="kpisDash"></div>
+
+  <div class="card" style="margin-top:14px">
+    <h2>Fila cronológica por máquina</h2>
+    <div id="gantt"></div>
+    <div style="font-size:12px;color:#475467;margin-top:8px">
+      <span style="display:inline-block;width:12px;height:12px;background:#1e7b34;border-radius:3px;vertical-align:-2px"></span> rodando &nbsp;
+      <span style="display:inline-block;width:12px;height:12px;background:#1f3864;border-radius:3px;vertical-align:-2px"></span> na fila &nbsp;
+      <span style="display:inline-block;width:12px;height:12px;background:repeating-linear-gradient(45deg,#e4e7ec 0 4px,#f2f4f7 4px 8px);border-radius:3px;vertical-align:-2px"></span> fora do cronograma (fim de semana)
+      · passe o mouse nos blocos para ver detalhes</div>
+  </div>
+
+  <div class="grade2">
+    <div class="card">
+      <h2>Peças que levam mais tempo</h2>
+      <div style="font-size:12px;color:#475467;margin-bottom:8px">Tempo por peça usado na fila e custo de usinagem agregado (tempo × R$ <span class="hm"></span>/h).</div>
+      <div id="topPecas"></div>
+    </div>
+    <div class="card">
+      <h2>Custo de usinagem da fila</h2>
+      <div style="font-size:12px;color:#475467;margin-bottom:8px">Horas restantes × R$ <span class="hm"></span>/h, por máquina.</div>
+      <div id="custoMaq"></div>
+    </div>
+  </div>
+  <div id="tooltip" class="tooltip oculto"></div>
+  <!-- ===================== OPERAÇÃO ===================== -->
+
   <!-- LANÇAR OP -->
   <div class="card">
     <h2>Lançar nova OP</h2>
@@ -29,9 +61,11 @@ window.onerror = function(m){
       <div><label>Código da peça</label><input id="codigo" list="listaPecas" autocomplete="off" placeholder="Ex.: EX-025"></div>
       <div><label>Quantidade</label><input id="quantidade" type="number" min="1" inputmode="numeric"></div>
       <div><label>Máquina</label><select id="maquinaNova" class="selMaq"></select></div>
+      <div><label>Tempo previsto (min/peça)</label><input id="tempoPrevisto" type="number" min="0" step="0.1" inputmode="decimal" placeholder="opcional"></div>
       <div><button class="btn-verde" id="btnLancar" style="margin:0">+ Lançar OP</button></div>
     </div>
     <datalist id="listaPecas"></datalist>
+    <div id="dicaTempo" style="font-size:13px;margin-top:8px;font-weight:600;color:var(--azul)"></div>
     <div style="font-size:13px;color:#475467;margin-top:8px">A OP entra no fim da fila. Código novo é cadastrado no catálogo automaticamente (sem preço).</div>
     <div id="msg"></div>
   </div>
@@ -51,6 +85,23 @@ window.onerror = function(m){
     <div class="rolagem"><table id="tFila"></table></div>
   </div>
 
+  <!-- PREVISÃO CRONOLÓGICA -->
+  <div class="card">
+    <h2>Previsão detalhada por máquina</h2>
+    <div style="font-size:13px;color:#475467;margin-bottom:10px">
+      Tempo de cada OP = tempo/peça × quantidade − o que já foi trabalhado. Tempo/peça: <b>Padrão</b> (média dos últimos 5 lotes do mesmo código)
+      ou, se o código nunca foi usinado, o <b>Previsto</b> pelo PCP. OPs com máquina "Qualquer" vão para a máquina que fica livre primeiro.
+      O relógio só avança nos turnos de segunda a sexta (07h às 06h30 do dia seguinte); sábado não entra.</div>
+    <div id="previsao"></div>
+  </div>
+
+  <!-- TEMPOS POR PEÇA -->
+  <div class="card">
+    <h2>Tempos por código de peça</h2>
+    <div style="font-size:13px;color:#475467;margin-bottom:8px">O tempo previsto só é usado enquanto o código não tiver lote encerrado. Depois vale o padrão real.</div>
+    <div class="rolagem"><table id="tTempos"></table></div>
+  </div>
+
   <!-- HISTÓRICO -->
   <div class="card">
     <h2>Histórico</h2>
@@ -65,6 +116,8 @@ window.onerror = function(m){
 
 <script>
 let fila = [], historico = [], maquinas = [], arrastando = null;
+const HORA_MAQUINA = 110;                      // R$ por hora de máquina (ajuste aqui quando mudar)
+const custo = minutos => Number(minutos || 0) / 60 * HORA_MAQUINA;
 const btnPeq = 'style="margin:0;padding:4px 10px;font-size:13px;width:auto"';
 
 async function abrirPcp(){
@@ -72,6 +125,7 @@ async function abrirPcp(){
   maquinas = maqs || [];
   $("maquinaNova").innerHTML = opcoesMaquina("");
   await carregarCatalogo();
+  await carregarTempos();
   await carregarTudo();
   setInterval(() => { if(!arrastando) carregarFila(); }, 30000);   // atualiza a cada 30 s
 }
@@ -92,22 +146,28 @@ async function carregarFila(){
                                   .order("prioridade", { ascending:true, nullsFirst:false }).order("criada_em");
   if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
   fila = data;
-  desenharFila(); desenharPrevia();
+  desenharFila(); desenharPrevia(); desenharPrevisao();
 }
 
+const tagFonte = f => f === "Padrão" ? '<span class="tag t-Concluída">Padrão</span>'
+                    : f === "Previsto PCP" ? '<span class="tag t-Aguardando">Previsto</span>'
+                    : '<span class="tag t-Cancelada">Sem tempo</span>';
+
 function desenharFila(){
-  $("tFila").innerHTML = `<tr><th></th><th class="n">#</th><th>OP</th><th>Peça</th><th class="n">Qtd</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th>Ordem</th><th></th></tr>` +
+  $("tFila").innerHTML = `<tr><th></th><th class="n">#</th><th>OP</th><th>Peça</th><th class="n">Qtd</th><th>Situação</th><th>Máquina</th><th class="n">Tempo/peça</th><th class="n">Restante</th><th class="n">Custo usinagem do lote</th><th>Ordem</th><th></th></tr>` +
     fila.map((o, i) => `<tr draggable="true" data-i="${i}" style="cursor:grab">
       <td style="color:#98a2b3">⠿</td><td class="n"><b>${i + 1}</b></td>
       <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td><td class="n">${o.quantidade}</td>
       <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span>${o.situacao === "Em execução" ? " " + texto(o.ultima_maquina) : ""}</td>
       <td><select onchange="mudarMaquina(${o.id}, this.value)" style="padding:6px;font-size:14px">${opcoesMaquina(o.maquina_preferida_codigo)}</select></td>
-      <td class="n">${horas(o.minutos_total)}</td>
+      <td class="n">${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min" : "–"}<br>${tagFonte(o.tempo_fonte)}</td>
+      <td class="n">${o.tempo_peca != null ? horas(o.minutos_restantes) : "–"}</td>
+      <td class="n">${o.tempo_peca != null ? brl(custo(o.tempo_peca * o.quantidade)) : "–"}</td>
       <td><button class="btn-azul" ${btnPeq} onclick="mover(${i},-1)" ${i === 0 ? "disabled" : ""}>▲</button>
           <button class="btn-azul" ${btnPeq} onclick="mover(${i},1)" ${i === fila.length - 1 ? "disabled" : ""}>▼</button></td>
       <td>${o.situacao !== "Em execução" ? `<button class="btn-vermelho" ${btnPeq} onclick="cancelar(${o.id})">Cancelar</button>` : ""}</td>
     </tr>`).join("") +
-    (fila.length ? "" : `<tr><td colspan="10"><i>Nenhuma OP aberta.</i></td></tr>`);
+    (fila.length ? "" : `<tr><td colspan="12"><i>Nenhuma OP aberta.</i></td></tr>`);
 
   // Arrastar e soltar (computador)
   document.querySelectorAll("#tFila tr[draggable]").forEach(tr => {
@@ -137,7 +197,7 @@ async function reposicionar(de, para){
   if(de === null || para < 0 || para >= fila.length || de === para) return;
   const [item] = fila.splice(de, 1);      // tira da posição antiga...
   fila.splice(para, 0, item);             // ...e coloca na nova
-  desenharFila(); desenharPrevia();
+  desenharFila(); desenharPrevia(); desenharPrevisao();
   const { error } = await db.rpc("definir_ordem", { p_ids: fila.map(o => o.id) });
   if(error){ alert(error.message); carregarFila(); }
 }
@@ -147,6 +207,229 @@ async function mudarMaquina(id, codigo){
   if(error) alert(error.message);
   carregarFila();
 }
+
+// ---------------------------------------------------------------
+// TEMPOS POR PEÇA
+// ---------------------------------------------------------------
+let tempos = [];
+async function carregarTempos(){
+  const { data, error } = await db.from("vw_tempo_peca").select("*").order("codigo");
+  if(error){ alert(error.message); return; }
+  tempos = data;
+  $("tTempos").innerHTML = `<tr><th>Código</th><th>Previsto PCP (min/peça)</th><th></th><th class="n">Padrão real (min/peça)</th><th class="n">Lotes na média</th><th>Usado na fila</th><th class="n">Custo usinagem/peça</th></tr>` +
+    tempos.map(t => `<tr><td><b>${texto(t.codigo)}</b></td>
+      <td><input id="tp${t.catalogo_id}" type="number" min="0" step="0.1" value="${t.tempo_previsto ?? ""}" style="width:110px;padding:6px"></td>
+      <td><button class="btn-azul" ${btnPeq} onclick="salvarTempo(${t.catalogo_id})">Salvar</button></td>
+      <td class="n">${t.tempo_padrao != null ? Number(t.tempo_padrao).toLocaleString("pt-BR") : "–"}</td><td class="n">${t.lotes_base}</td>
+      <td>${t.tempo_usado != null ? Number(t.tempo_usado).toLocaleString("pt-BR") + " min " : ""}${tagFonte(t.fonte)}</td>
+      <td class="n">${t.tempo_usado != null ? brl(custo(t.tempo_usado)) : "–"}</td></tr>`).join("");
+  desenharTopPecas();
+}
+async function salvarTempo(id){
+  const codigo = tempos.find(t => t.catalogo_id === id).codigo;
+  const v = $("tp" + id).value;
+  const { error } = await db.rpc("definir_tempo_previsto", { p_codigo: codigo, p_minutos: v === "" ? null : Number(v) });
+  if(error){ alert(error.message); return; }
+  await carregarTempos(); carregarFila();
+}
+// Ao digitar o código, mostra qual tempo o sistema vai usar
+$("codigo").oninput = () => {
+  const t = tempos.find(x => x.codigo.toLowerCase() === $("codigo").value.trim().toLowerCase());
+  $("dicaTempo").textContent = !t ? "Código novo: informe o tempo previsto para entrar na previsão da fila."
+    : t.fonte === "Padrão" ? `Este código já tem tempo padrão: ${Number(t.tempo_padrao).toLocaleString("pt-BR")} min/peça (últimos ${t.lotes_base} lotes). O previsto não será usado.`
+    : t.fonte === "Previsto PCP" ? `Ainda sem histórico. Tempo previsto atual: ${Number(t.tempo_previsto).toLocaleString("pt-BR")} min/peça.`
+    : "Ainda sem histórico e sem tempo previsto: informe o tempo previsto.";
+};
+
+// ---------------------------------------------------------------
+// PREVISÃO CRONOLÓGICA (simulação da fila)
+// ---------------------------------------------------------------
+// Janelas de trabalho de cada dia (minutos desde 00:00). Noite vai até 06:30 do dia seguinte (= 30:30).
+const JANELAS = [ [7*60, 12*60], [12*60, 22*60], [22*60, 30*60 + 30] ];
+// Segunda a sexta. A noite de sexta (22h) termina às 06:30 de sábado, porque pertence à sexta.
+// Sábado eventual não entra no cronograma (serve para tirar atraso ou adiantar).
+const DIAS_DE_TRABALHO = [1,2,3,4,5];          // 0 = domingo ... 6 = sábado
+
+// Lista os intervalos de trabalho a partir de uma data (gera dias conforme precisa)
+function* intervalosDeTrabalho(desde){
+  const d = new Date(desde.getFullYear(), desde.getMonth(), desde.getDate() - 1);   // começa no dia anterior (noite)
+  for(let i = 0; i < 400; i++, d.setDate(d.getDate() + 1)){
+    if(!DIAS_DE_TRABALHO.includes(d.getDay())) continue;
+    for(const [a, b] of JANELAS){
+      const ini = new Date(d.getTime() + a * 60000), fim = new Date(d.getTime() + b * 60000);
+      if(fim > desde) yield [ini < desde ? new Date(desde) : ini, fim];
+    }
+  }
+}
+// Soma "minutos de máquina" a uma data, pulando o tempo fora dos turnos
+function avancar(desde, minutos){
+  let resta = minutos, inicio = null;
+  for(const [a, b] of intervalosDeTrabalho(desde)){
+    if(!inicio) inicio = a;                                  // primeiro momento útil = início real
+    const cabe = (b - a) / 60000;
+    if(resta <= cabe) return { inicio, fim: new Date(a.getTime() + resta * 60000) };
+    resta -= cabe;
+  }
+  return { inicio: inicio || desde, fim: desde };
+}
+
+function simular(){
+  const agora = new Date();
+  const livreEm = {}, linhas = {};
+  maquinas.forEach(m => { livreEm[m.codigo] = agora; linhas[m.codigo] = []; });
+
+  // 1) OPs rodando agora: terminam no tempo restante
+  fila.filter(o => o.situacao === "Em execução" && linhas[o.ultima_maquina_codigo]).forEach(o => {
+    const r = avancar(agora, Number(o.minutos_restantes));
+    linhas[o.ultima_maquina_codigo].push({ ...o, inicio: agora, fim: r.fim, rodando: true });
+    livreEm[o.ultima_maquina_codigo] = r.fim;
+  });
+  // 2) Demais OPs, na ordem do PCP
+  fila.filter(o => o.situacao !== "Em execução").forEach(o => {
+    let m = o.maquina_preferida_codigo && linhas[o.maquina_preferida_codigo] ? o.maquina_preferida_codigo
+          : maquinas.map(x => x.codigo).sort((a, b) => livreEm[a] - livreEm[b])[0];   // a que fica livre primeiro
+    const r = avancar(livreEm[m], Number(o.minutos_restantes));
+    linhas[m].push({ ...o, inicio: r.inicio, fim: r.fim, semTempo: o.tempo_peca == null, automatica: !o.maquina_preferida_codigo });
+    livreEm[m] = r.fim;
+  });
+  return { agora, livreEm, linhas };
+}
+
+function desenharPrevisao(){
+  if(!maquinas.length) return;
+  const { agora, livreEm, linhas } = simular();
+  desenharDashboard(agora, livreEm, linhas);
+
+  $("previsao").innerHTML = maquinas.map(m => {
+    const ls = linhas[m.codigo];
+    const carga = ls.reduce((a, o) => a + Number(o.minutos_restantes), 0);
+    const semTempo = ls.filter(o => o.semTempo).length;
+    return `<div style="margin-bottom:22px">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <b style="font-size:17px">${texto(m.nome)}</b>
+        <span>Carga: <b>${horas(carga)}</b> · Livre em: <b>${dataCurta(livreEm[m.codigo])}</b>
+          ${semTempo ? ` · <span class="tag t-Cancelada">${semTempo} OP sem tempo</span>` : ""}</span>
+      </div>
+      <div class="rolagem"><table>
+        <tr><th class="n">#</th><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Tempo/peça</th><th class="n">Duração restante</th><th>Início previsto</th><th>Fim previsto</th></tr>
+        ${ls.map((o, i) => `<tr><td class="n">${i + 1}</td>
+          <td><b>${texto(o.op)}</b> ${o.rodando ? '<span class="tag t-Em">rodando</span>' : ""}${o.automatica && !o.rodando ? ' <span class="tag t-Aguardando">auto</span>' : ""}</td>
+          <td>${texto(o.peca)}</td><td class="n">${o.quantidade}</td>
+          <td class="n">${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min" : "–"} ${tagFonte(o.tempo_fonte)}</td>
+          <td class="n">${o.semTempo ? "?" : horas(o.minutos_restantes)}</td>
+          <td>${o.rodando ? "em andamento" : dataCurta(o.inicio)}</td><td><b>${o.semTempo ? "?" : dataCurta(o.fim)}</b></td></tr>`).join("")
+          || `<tr><td colspan="8"><i>Sem OPs na fila.</i></td></tr>`}
+      </table></div></div>`;
+  }).join("");
+}
+
+// ---------------------------------------------------------------
+// DASHBOARD
+// ---------------------------------------------------------------
+const dataCurta = d => d.toLocaleString("pt-BR", { weekday:"short", day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+
+function desenharDashboard(agora, livreEm, linhas){
+  document.querySelectorAll("#hm,.hm").forEach(e => e.textContent = HORA_MAQUINA.toLocaleString("pt-BR"));
+  $("atualizado").textContent = agora.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
+
+  // --- Indicadores ---
+  const todas = Object.values(linhas).flat();
+  const cargaTotal = todas.reduce((a, o) => a + Number(o.minutos_restantes), 0);
+  const semTempo = todas.filter(o => o.semTempo).length;
+  $("kpisDash").innerHTML =
+    `<div class="kpi">Carga total da fila<b>${horas(cargaTotal)}</b></div>` +
+    maquinas.map(m => `<div class="kpi">${texto(m.nome)} livre em<b style="font-size:19px">${dataCurta(livreEm[m.codigo])}</b></div>`).join("") +
+    `<div class="kpi">OPs abertas<b>${todas.length}</b></div>` +
+    `<div class="kpi">Custo de usinagem da fila<b>${brl(custo(cargaTotal))}</b></div>` +
+    `<div class="kpi">OPs sem tempo<b style="color:${semTempo ? "#b42318" : "inherit"}">${semTempo}</b></div>`;
+
+  desenharGantt(agora, livreEm, linhas);
+
+  // --- Custo por máquina (barras horizontais, uma cor) ---
+  const porMaq = maquinas.map(m => ({ nome:m.nome, min: linhas[m.codigo].reduce((a, o) => a + Number(o.minutos_restantes), 0), ops: linhas[m.codigo].length }));
+  const maxMin = Math.max(1, ...porMaq.map(x => x.min));
+  $("custoMaq").innerHTML = porMaq.map(x => barraH(x.nome, x.min / maxMin, `<b>${brl(custo(x.min))}</b> · ${horas(x.min)} · ${x.ops} OPs`)).join("") +
+    `<div style="border-top:1px solid var(--borda);margin-top:10px;padding-top:8px;display:flex;justify-content:space-between">
+       <span>Total</span><b>${brl(custo(cargaTotal))}</b></div>`;
+}
+
+// Barra horizontal simples: rótulo, barra proporcional, valor em texto
+const barraH = (rotulo, fracao, valor) => `
+  <div style="display:grid;grid-template-columns:minmax(80px,140px) 1fr;gap:10px;align-items:center;margin:8px 0">
+    <span style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${texto(rotulo)}</span>
+    <div><div style="height:14px;background:#f2f4f7;border-radius:4px"><div style="height:100%;width:${Math.max(1, fracao * 100)}%;background:#1f3864;border-radius:0 4px 4px 0"></div></div>
+         <div style="font-size:12px;color:#344054;margin-top:3px">${valor}</div></div>
+  </div>`;
+
+function desenharTopPecas(){
+  const lista = tempos.filter(t => t.tempo_usado != null).sort((a, b) => b.tempo_usado - a.tempo_usado).slice(0, 10);
+  const max = Math.max(1, ...lista.map(t => Number(t.tempo_usado)));
+  $("topPecas").innerHTML = lista.length ? lista.map(t => barraH(t.codigo, t.tempo_usado / max,
+      `<b>${Number(t.tempo_usado).toLocaleString("pt-BR")} min/peça</b> · ${brl(custo(t.tempo_usado))}/peça · ${t.fonte === "Padrão" ? "padrão real" : "previsto"}`)).join("")
+    : "<i>Nenhuma peça com tempo ainda.</i>";
+}
+
+// --- Gantt: uma linha por máquina, blocos posicionados no relógio ---
+function desenharGantt(agora, livreEm, linhas){
+  const fimDados = Math.max(...Object.values(livreEm).map(d => d.getTime()));
+  const ini = agora.getTime(), fim = Math.max(fimDados, ini + 24 * 3600000) + 2 * 3600000;
+  const x = t => ((t - ini) / (fim - ini) * 100);
+
+  // Períodos fora do cronograma (lacunas entre os intervalos de trabalho maiores que 2 h)
+  const foras = []; let ultimo = ini;
+  for(const [a, b] of intervalosDeTrabalho(new Date(ini))){
+    if(a.getTime() >= fim) break;
+    if(a.getTime() - ultimo > 2 * 3600000) foras.push([ultimo, a.getTime()]);
+    ultimo = b.getTime();
+  }
+  // Marcas de dia (00:00)
+  const dias = []; const d0 = new Date(ini); d0.setHours(0,0,0,0);
+  for(let d = new Date(d0.getTime() + 86400000); d.getTime() < fim; d.setDate(d.getDate() + 1)) dias.push(new Date(d));
+  const passo = Math.ceil(dias.length / 10);        // no máximo ~10 rótulos
+
+  const fundo = foras.map(([a, b]) => `<div style="position:absolute;top:0;bottom:0;left:${x(a)}%;width:${x(b) - x(a)}%;
+        background:repeating-linear-gradient(45deg,#e4e7ec 0 4px,#f2f4f7 4px 8px)"></div>`).join("") +
+    dias.map(d => `<div style="position:absolute;top:0;bottom:0;left:${x(d)}%;border-left:1px solid #d0d5dd"></div>`).join("");
+
+  const cores = ["#1f3864", "#3b6aa8"];               // alterna dois tons para separar blocos vizinhos
+  window._ganttItens = [];
+  const linhasHtml = maquinas.map(m => `
+    <div style="display:grid;grid-template-columns:70px 1fr;align-items:center;gap:8px;margin:6px 0">
+      <b>${texto(m.nome)}</b>
+      <div style="position:relative;height:42px;background:#fff;border:1px solid var(--borda);border-radius:6px;overflow:hidden">
+        ${fundo}
+        ${linhas[m.codigo].map((o, i) => {
+          window._ganttItens.push(o); const k = window._ganttItens.length - 1;
+          const w = o.semTempo ? 0.4 : Math.max(0.4, x(o.fim) - x(o.inicio));
+          return `<div onmousemove="mostrarDica(event,${k})" onmouseleave="esconderDica()"
+            style="position:absolute;top:5px;bottom:5px;left:${x(o.inicio)}%;width:calc(${w}% - 2px);
+                   background:${o.semTempo ? "#b42318" : o.rodando ? "#1e7b34" : cores[i % 2]};border-radius:4px;color:#fff;
+                   font-size:11px;line-height:30px;padding:0 4px;overflow:hidden;white-space:nowrap;cursor:default">${texto(o.op)}</div>`;
+        }).join("")}
+        <div style="position:absolute;top:0;bottom:0;left:0;border-left:2px solid #b42318"></div>
+      </div>
+    </div>`).join("");
+
+  const eixo = `<div style="display:grid;grid-template-columns:70px 1fr;gap:8px">
+      <span></span><div style="position:relative;height:18px;font-size:11px;color:#475467">
+        <span style="position:absolute;left:0">agora</span>
+        ${dias.filter((_, i) => i % passo === 0).map(d => `<span style="position:absolute;left:${x(d)}%;transform:translateX(-50%);white-space:nowrap">
+          ${d.toLocaleDateString("pt-BR", { weekday:"short", day:"2-digit", month:"2-digit" })}</span>`).join("")}
+      </div></div>`;
+  $("gantt").innerHTML = eixo + linhasHtml;
+}
+
+function mostrarDica(e, k){
+  const o = window._ganttItens[k], t = $("tooltip");
+  t.innerHTML = `<b>OP ${texto(o.op)}</b> · ${texto(o.peca)} · ${o.quantidade} pç<br>
+    ${o.rodando ? "Rodando agora" : "Início: " + dataCurta(o.inicio)}<br>
+    Fim previsto: <b>${o.semTempo ? "sem tempo" : dataCurta(o.fim)}</b><br>
+    Restante: ${o.semTempo ? "?" : horas(o.minutos_restantes)} · ${o.semTempo ? "" : brl(custo(o.minutos_restantes))}<br>
+    Tempo/peça: ${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min (" + o.tempo_fonte + ")" : "–"}`;
+  t.classList.remove("oculto");
+  t.style.left = Math.min(e.clientX + 14, innerWidth - 280) + "px"; t.style.top = (e.clientY + 14) + "px";
+}
+function esconderDica(){ $("tooltip").classList.add("oculto"); }
 
 // ---------------------------------------------------------------
 // HISTÓRICO: concluídas / canceladas
@@ -177,12 +460,13 @@ $("btnLancar").onclick = async () => {
   const numero = $("numero").value.trim(), codigo = $("codigo").value.trim(), qtd = Number($("quantidade").value);
   if(!numero || !codigo || !(qtd > 0)){ $("msg").innerHTML = `<div class="msg erro">Preencha OP, código e quantidade.</div>`; return; }
   $("btnLancar").disabled = true;
-  const { error } = await db.rpc("criar_op", { p_numero: numero, p_codigo: codigo, p_quantidade: qtd, p_maquina: $("maquinaNova").value || null });
+  const { error } = await db.rpc("criar_op", { p_numero: numero, p_codigo: codigo, p_quantidade: qtd, p_maquina: $("maquinaNova").value || null,
+                                                p_tempo_previsto: $("tempoPrevisto").value ? Number($("tempoPrevisto").value) : null });
   $("btnLancar").disabled = false;
   if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
   $("msg").innerHTML = `<div class="msg ok">OP ${texto(numero)} lançada no fim da fila.</div>`;
-  $("numero").value = ""; $("quantidade").value = ""; $("numero").focus();
-  carregarCatalogo(); carregarFila();
+  $("numero").value = ""; $("quantidade").value = ""; $("tempoPrevisto").value = ""; $("dicaTempo").textContent = ""; $("numero").focus();
+  carregarCatalogo(); carregarTempos(); carregarFila();
 };
 
 async function cancelar(id){
