@@ -35,6 +35,17 @@ window.onerror = function(m){
     <div id="msg"></div>
   </div>
 
+  <!-- OPERADORES -->
+  <div class="card">
+    <h2>Operadores</h2>
+    <div class="filtros">
+      <div><label>Novo operador</label><input id="novoOperador" placeholder="Nome"></div>
+      <div><button class="btn-azul" id="btnOperador" style="margin:0">+ Adicionar</button></div>
+    </div>
+    <div style="font-size:13px;color:#475467;margin-top:8px">Só operadores ativos aparecem no celular. Desativar não apaga o histórico.</div>
+    <div class="rolagem" style="margin-top:8px"><table id="tOperadores"></table></div>
+  </div>
+
   <!-- LISTA DE OPs -->
   <div class="card">
     <h2>OPs</h2>
@@ -54,6 +65,7 @@ async function abrirPcp(){
   const { data: cat } = await db.from("catalogo").select("codigo").order("codigo");
   $("listaPecas").innerHTML = (cat || []).map(c => `<option value="${texto(c.codigo)}">`).join("");
   await carregarOps();
+  carregarOperadores();
   setInterval(carregarOps, 30000);        // atualiza sozinho a cada 30 s
 }
 
@@ -107,6 +119,30 @@ async function cancelar(id){
   if(error) alert(error.message);
   carregarOps();
 }
+
+// ---------- OPERADORES ----------
+async function carregarOperadores(){
+  const { data, error } = await db.from("operadores").select("id,nome,ativo").order("ativo", { ascending:false }).order("nome");
+  if(error){ alert(error.message); return; }
+  $("tOperadores").innerHTML = `<tr><th>Nome</th><th>Situação</th><th></th></tr>` +
+    data.map(o => `<tr><td>${texto(o.nome)}</td>
+      <td>${o.ativo ? '<span class="tag t-Em">Ativo</span>' : '<span class="tag t-Aguardando">Inativo</span>'}</td>
+      <td><button class="${o.ativo ? "btn-vermelho" : "btn-verde"}" style="margin:0;padding:4px 10px;font-size:13px;width:auto"
+           onclick="alternarOperador(${o.id}, ${!o.ativo})">${o.ativo ? "Desativar" : "Reativar"}</button></td></tr>`).join("");
+}
+async function alternarOperador(id, ativo){
+  const { error } = await db.from("operadores").update({ ativo }).eq("id", id);
+  if(error) alert(error.message);
+  carregarOperadores();
+}
+$("btnOperador").onclick = async () => {
+  const nome = $("novoOperador").value.trim().replace(/\s+/g, " ");
+  if(!nome) return;
+  const { error } = await db.from("operadores").insert({ nome });
+  if(error){ alert(error.code === "23505" ? "Esse operador já existe." : error.message); return; }
+  $("novoOperador").value = "";
+  carregarOperadores();
+};
 
 $("fStatus").onchange = carregarOps;
 $("fBusca").oninput = desenhar;

@@ -45,8 +45,7 @@ window.onerror = function(m){
   <div id="telaLivre" class="card oculto">
     <h2>⚪ Máquina livre</h2>
     <label for="operador">Operador</label>
-    <input id="operador" list="listaOperadores" autocomplete="off" placeholder="Seu nome">
-    <datalist id="listaOperadores"></datalist>
+    <select id="operador"></select>
     <label>Escolha a OP</label>
     <div id="listaOps"></div>
     <button id="btnIniciar" class="btn-azul">▶ INICIAR</button>
@@ -83,9 +82,11 @@ async function iniciarTela(){
   $("titulo").textContent = maq.nome;
   $("subtitulo").textContent = "Código " + maquina;
 
-  const { data: ops } = await db.from("operadores").select("nome").order("nome");
-  $("listaOperadores").innerHTML = (ops || []).map(o => `<option value="${texto(o.nome)}">`).join("");
-  $("operador").value = lembrado("operador") || "";
+  // Lista fixa de operadores ativos (cadastrados pelo PCP)
+  const { data: ops } = await db.from("operadores").select("nome").eq("ativo", true).order("nome");
+  $("operador").innerHTML = `<option value="">– selecione –</option>` +
+    (ops || []).map(o => `<option>${texto(o.nome)}</option>`).join("");
+  if((ops || []).some(o => o.nome === lembrado("operador"))) $("operador").value = lembrado("operador");
 
   await atualizar();
 }
@@ -154,7 +155,7 @@ async function executar(botao, chamada, textoOk){
 $("btnIniciar").onclick = () => {
   const operador = $("operador").value.trim();
   const opId = Number(document.querySelector('input[name="op"]:checked')?.value);
-  if(!operador){ mensagem("Informe o nome do operador.", "erro"); return; }
+  if(!operador){ mensagem("Selecione o operador.", "erro"); return; }
   if(!opId){ mensagem("Escolha uma OP.", "erro"); return; }
   lembrar("operador", operador);
   executar($("btnIniciar"),
