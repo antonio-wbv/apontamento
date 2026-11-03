@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Apontamento de Produção</title>
+<link rel="stylesheet" href="estilo.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<header><h1 id="titulo">Apontamento</h1><small id="subtitulo">carregando...</small></header>
+<main>
+  <!-- TELA A: máquina EM ABERTO -> só mostra a operação atual e os botões de encerrar -->
+  <div id="telaAberta" class="oculto">
+    <div class="card aberto">
+      <h2>🟢 Operação em andamento</h2>
+      <div id="abertaTexto" style="font-size:18px;line-height:1.5"></div>
+      <button id="btnConcluir" class="btn-verde">✔ CONCLUÍDA (peça pronta)</button>
+    </div>
+    <div class="card">
+      <h2>Interromper (não conta peça)</h2>
+      <select id="motivo">
+        <option>Fim de turno</option><option>Parada</option><option>Setup</option>
+        <option>Manutenção</option><option>Falta de material</option><option>Outro</option>
+      </select>
+      <button id="btnInterromper" class="btn-vermelho">■ INTERROMPER</button>
+    </div>
+  </div>
+
+  <!-- TELA B: máquina LIVRE -> formulário para iniciar -->
+  <div id="telaLivre" class="card oculto">
+    <h2>⚪ Máquina livre – iniciar operação</h2>
+    <label for="operador">Operador</label><select id="operador"></select>
+    <label for="peca">Peça</label><select id="peca"></select>
+    <label for="operacao">Operação</label><select id="operacao"></select>
+    <button id="btnIniciar" class="btn-azul">▶ INICIAR</button>
+  </div>
+
+  <div id="msg"></div>
+
+  <!-- Como o celular é o mesmo, mostra também as OUTRAS máquinas -->
+  <div class="card" id="outrasCard"><h2>Outras máquinas</h2><div id="outras"></div></div>
+</main>
+
+<script>
+// =====================================================================
+// 1) Conexão e qual máquina veio no QR Code  (index.html?m=MAQ1)
+// =====================================================================
+const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+const maquina = new URLSearchParams(location.search).get("m");
+const $ = id => document.getElementById(id);
+let catalogo = [];
+
+function lembrar(k, v){ try{ localStorage.setItem(k, v) }catch(e){} }
+function lembrado(k){ try{ return localStorage.getItem(k) }catch(e){ return null } }
+function mensagem(t, tipo){ $("msg").innerHTML = t ? `<div class="msg ${tipo}">${t}</div>` : ""; }
+const hora = ts => new Date(ts).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+const minutos = ts => Math.round((Date.now() - new Date(ts)) / 60000);
+
+// =====================================================================
+// 2) Ao abrir: carrega a máquina, as listas e decide qual tela mostrar
+// =====================================================================
+async function iniciarTela(){
+  if(!maquina){ mensagem("QR Code inválido (falta ?m=CODIGO).","erro"); return; }
+  const { data: maq } = await db.from("maquinas").select("nome").eq("codigo", maquina).eq("ativa", true).maybeSingle();
+  if(!maq){ mensagem(`Máquina "${maquina}" não cadastrada.`,"erro"); return; }
+  $("titulo").textContent = maq.nome;
+  $("subtitulo").textContent = "Código " + maquina;
+
+  const { data: ops } = await db.from("operadores").select("id,nome").eq("ativo", true).order("nome");
+  $("operador").innerHTML = ops.map(o => `<option value="${o.id}">${o.nome}</option>`).join("");
+  if(lembrado("operador")) $("operador").value = lembrado("operador");
+
+  const { data: cat } = await db.from("catalogo").select("id,peca,operacao").eq("ativo", true).order("peca");
+  catalogo = cat;
+  const pecas = [...new Set(cat.map(c => c.peca))];
+  $("peca").innerHTML = pecas.map(p => `<option>${p}</option>`).join("");
+  if(pecas.includes(lembrado("peca"))) $("peca").value = lembrado("peca");
+  montarOperacoes();
+
+  await atualizar();
+}
+
+function montarOperacoes(){
+  const lista = catalogo.filter(c => c.peca === $("peca").value);
+  $("operacao").innerHTML = lista.map(c => `<option value="${c.id}">${c.operacao}</option>`).join("");
+  if(lista.some(c => String(c.id) === lembrado("catalogo"))) $("operacao").value = lembrado("catalogo");
+}
+$("peca").addEventListener("change", montarOperacoes);
+
+// =====================================================================
+// 3) A DECISÃO PRINCIPAL: esta máquina tem operação aberta?
+//    SIM -> tela A (encerrar)     NÃO -> tela B (iniciar)
+// =====================================================================
+async function atualizar(){
+  const { data, error } = await db.rpc("apontamentos_abertos");
+  if(error){ mensagem("Erro ao consultar: " + error.message, "erro"); return; }
+
+  const minha  = data.find(a => a.maquina_codigo === maquina);   // a desta máquina
+  const outras = data.filter(a => a.maquina_codigo !== maquina);  // as demais
+
+  if(minha){
+    $("abertaTexto").innerHTML =
+      `<b>${minha.peca}</b> – ${minha.operacao}<br>Operador: ${minha.operador}<br>Início ${hora(minha.inicio)} · há ${minutos(minha.inicio)} min`;
+    $("telaAberta").classList.remove("oculto");
+    $("telaLivre").classList.add("oculto");
+  } else {
+    $("telaAberta").classList.add("oculto");
+    $("telaLivre").classList.remove("oculto");
+  }
+
+  $("outras").innerHTML = outras.length
+    ? outras.map(a => `🟢 <b>${a.maquina}</b>: ${a.peca} – ${a.operacao} (${a.operador}, há ${minutos(a.inicio)} min)`).join("<br>")
+    : "Nenhuma outra máquina com operação aberta.";
+}
+
+// =====================================================================
+// 4) Botões
+// =====================================================================
+async function executar(botao, chamada, textoOk){
+  botao.disabled = true;
+  const { error } = await chamada();
+  mensagem(error ? "Erro: " + error.message : textoOk, error ? "erro" : "ok");
+  await atualizar();
+  botao.disabled = false;
+}
+
+$("btnIniciar").onclick = () => {
+  lembrar("operador", $("operador").value); lembrar("peca", $("peca").value); lembrar("catalogo", $("operacao").value);
+  executar($("btnIniciar"),
+    () => db.rpc("iniciar_apontamento", { p_maquina: maquina, p_operador: Number($("operador").value), p_catalogo: Number($("operacao").value) }),
+    `▶ Operação iniciada às ${hora(new Date())}.`);
+};
+
+$("btnConcluir").onclick = () => executar($("btnConcluir"),
+  () => db.rpc("encerrar_apontamento", { p_maquina: maquina, p_concluida: true }),
+  "✔ Peça concluída e registrada.");
+
+$("btnInterromper").onclick = () => {
+  if(!confirm("Interromper a operação? Ela NÃO contará como peça pronta.")) return;
+  executar($("btnInterromper"),
+    () => db.rpc("encerrar_apontamento", { p_maquina: maquina, p_concluida: false, p_motivo: $("motivo").value }),
+    "■ Operação interrompida.");
+};
+
+iniciarTela();
+</script>
+</body>
+</html>

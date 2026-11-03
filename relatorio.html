@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Relatório de Produção</title>
+<link rel="stylesheet" href="estilo.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<header><h1>Relatório de Produção – Usinagem</h1><small id="usuario"></small></header>
+<main>
+  <!-- LOGIN (só o gestor vê os dados) -->
+  <div class="card" id="loginCard" style="max-width:420px;margin:30px auto">
+    <h2>Entrar</h2>
+    <label>E-mail</label><input id="email" type="email">
+    <label>Senha</label><input id="senha" type="password">
+    <button class="btn-azul" id="btnLogin">Entrar</button>
+    <div id="loginMsg"></div>
+  </div>
+
+  <div id="painel" class="oculto">
+    <div class="card filtros">
+      <div><label>Data inicial</label><input type="date" id="dIni"></div>
+      <div><label>Data final</label><input type="date" id="dFim"></div>
+      <div><label>Turno</label><select id="fTurno"><option>Todos</option><option>Manhã</option><option>Tarde</option><option>Noite</option><option>Fora de turno</option></select></div>
+      <div><label>Máquina</label><select id="fMaq"><option value="">Todas</option></select></div>
+      <div><button class="btn-azul" id="btnFiltrar" style="margin:0">Filtrar</button></div>
+      <div><button class="btn-verde" id="btnCsv" style="margin:0">Exportar CSV</button></div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi">Peças concluídas<b id="kQtd">0</b></div>
+      <div class="kpi">Valor total<b id="kValor">R$ 0,00</b></div>
+      <div class="kpi">Tempo médio por peça<b id="kTempo">–</b></div>
+      <div class="kpi">Em aberto agora<b id="kAberto">0</b></div>
+      <div class="kpi">Interrupções<b id="kInt">0</b></div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h2>Por peça e operação</h2><div class="rolagem"><table id="tPeca"></table></div></div>
+    <div class="card"><h2>Por turno e máquina</h2><div class="rolagem"><table id="tTurno"></table></div></div>
+    <div class="card"><h2>Apontamentos (detalhe)</h2><div class="rolagem"><table id="tDet"></table></div></div>
+    <button class="btn-vermelho" id="btnSair" style="max-width:200px">Sair</button>
+  </div>
+</main>
+
+<script>
+const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+const $ = id => document.getElementById(id);
+const brl = v => v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+const dataHora = ts => ts ? new Date(ts).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "<i>em aberto</i>";
+let linhas = [];   // resultado do último filtro
+
+// ---------- LOGIN ----------
+$("btnLogin").onclick = async () => {
+  const { error } = await db.auth.signInWithPassword({ email: $("email").value, password: $("senha").value });
+  if(error) $("loginMsg").innerHTML = `<div class="msg erro">${error.message}</div>`; else abrirPainel();
+};
+$("btnSair").onclick = async () => { await db.auth.signOut(); location.reload(); };
+
+async function abrirPainel(){
+  const { data:{ user } } = await db.auth.getUser();
+  if(!user) return;
+  $("usuario").textContent = user.email;
+  $("loginCard").classList.add("oculto"); $("painel").classList.remove("oculto");
+
+  // Período padrão = mês atual
+  const hoje = new Date(), iso = d => d.toISOString().slice(0,10);
+  $("dIni").value = iso(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
+  $("dFim").value = iso(hoje);
+
+  const { data: maqs } = await db.from("maquinas").select("codigo,nome").order("codigo");
+  maqs.forEach(m => $("fMaq").insertAdjacentHTML("beforeend", `<option value="${m.codigo}">${m.nome}</option>`));
+  filtrar();
+}
+
+// ---------- BUSCA COM FILTROS ----------
+async function filtrar(){
+  linhas = [];
+  // O Supabase devolve no máx. 1000 linhas por vez: buscamos em "páginas"
+  for(let de = 0; ; de += 1000){
+    let q = db.from("vw_apontamentos").select("*")
+              .gte("data_turno", $("dIni").value).lte("data_turno", $("dFim").value)
+              .order("inicio", { ascending:false }).range(de, de + 999);
+    if($("fTurno").value !== "Todos") q = q.eq("turno", $("fTurno").value);
+    if($("fMaq").value)               q = q.eq("maquina_codigo", $("fMaq").value);
+    const { data, error } = await q;
+    if(error){ alert(error.message); return; }
+    linhas = linhas.concat(data);
+    if(data.length < 1000) break;
+  }
+  desenhar();
+}
+
+// Agrupa linhas por uma "chave" e soma quantidade, valor e minutos
+function agrupar(chaveFn){
+  const g = {};
+  for(const l of linhas){
+    const k = chaveFn(l);
+    g[k] ??= { qtd:0, valor:0, min:0, nFech:0 };
+    g[k].qtd   += l.quantidade;
+    g[k].valor += Number(l.valor);
+    if(l.quantidade > 0){ g[k].min += Number(l.minutos); g[k].nFech++; }   // tempo médio só das peças CONCLUÍDAS
+  }
+  return g;
+}
+const media = o => o.nFech ? (o.min / o.nFech).toFixed(1) + " min" : "–";
+
+function desenhar(){
+  const tot = agrupar(() => "total").total || { qtd:0, valor:0, min:0, nFech:0 };
+  $("kQtd").textContent = tot.qtd;
+  $("kValor").textContent = brl(tot.valor);
+  $("kTempo").textContent = media(tot);
+  $("kAberto").textContent = linhas.filter(l => l.em_aberto).length;
+  $("kInt").textContent = linhas.filter(l => !l.em_aberto && l.quantidade === 0).length;
+
+  const gp = agrupar(l => l.peca + "|" + l.operacao);
+  $("tPeca").innerHTML = `<tr><th>Peça</th><th>Operação</th><th class="n">Qtd</th><th class="n">Valor</th><th class="n">Tempo médio</th></tr>` +
+    Object.entries(gp).sort((a,b) => b[1].valor - a[1].valor).map(([k,o]) => { const [p,op] = k.split("|");
+      return `<tr><td>${p}</td><td>${op}</td><td class="n">${o.qtd}</td><td class="n">${brl(o.valor)}</td><td class="n">${media(o)}</td></tr>` }).join("");
+
+  const gt = agrupar(l => l.turno + "|" + l.maquina);
+  $("tTurno").innerHTML = `<tr><th>Turno</th><th>Máquina</th><th class="n">Qtd</th><th class="n">Valor</th><th class="n">Tempo médio</th></tr>` +
+    Object.entries(gt).sort().map(([k,o]) => { const [t,m] = k.split("|");
+      return `<tr><td>${t}</td><td>${m}</td><td class="n">${o.qtd}</td><td class="n">${brl(o.valor)}</td><td class="n">${media(o)}</td></tr>` }).join("");
+
+  $("tDet").innerHTML = `<tr><th>Data turno</th><th>Turno</th><th>Máquina</th><th>Operador</th><th>Peça</th><th>Operação</th><th>Início</th><th>Fim</th><th class="n">Min</th><th class="n">Valor</th><th>Motivo fim</th></tr>` +
+    linhas.slice(0,500).map(l => `<tr><td>${l.data_turno.split("-").reverse().join("/")}</td><td>${l.turno}</td><td>${l.maquina}</td><td>${l.operador}</td><td>${l.peca}</td><td>${l.operacao}</td><td>${dataHora(l.inicio)}</td><td>${dataHora(l.fim)}</td><td class="n">${l.minutos}</td><td class="n">${brl(Number(l.valor))}</td><td>${l.motivo_fim ?? ""}</td></tr>`).join("") +
+    (linhas.length > 500 ? `<tr><td colspan="11"><i>Mostrando 500 de ${linhas.length}. Use Exportar CSV para ver tudo.</i></td></tr>` : "");
+}
+
+// ---------- EXPORTAR PARA EXCEL (CSV com ;) ----------
+$("btnCsv").onclick = () => {
+  const cols = ["data_turno","turno","maquina","operador","peca","operacao","quantidade","preco_unitario","valor","inicio","fim","minutos","motivo_fim"];
+  const numericas = ["quantidade","preco_unitario","valor","minutos"];
+  const celula = (l,c) => {
+    if(l[c] == null) return "";
+    if(numericas.includes(c)) return String(l[c]).replace(".", ",");      // vírgula decimal p/ Excel BR
+    if(c === "inicio" || c === "fim") return new Date(l[c]).toLocaleString("pt-BR");
+    return String(l[c]);
+  };
+  const txt = [cols.join(";")].concat(linhas.map(l => cols.map(c => celula(l,c)).join(";"))).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + txt], { type:"text/csv" }));
+  a.download = `producao_${$("dIni").value}_a_${$("dFim").value}.csv`;
+  a.click();
+};
+$("btnFiltrar").onclick = filtrar;
+
+abrirPainel();   // se já estiver logado, entra direto
+</script>
+</body>
+</html>

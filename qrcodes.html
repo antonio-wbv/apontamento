@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QR Codes das Máquinas</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<style>
+body{font-family:Arial,sans-serif;text-align:center}
+.etq{display:inline-block;border:2px dashed #999;padding:24px;margin:16px;width:320px;page-break-inside:avoid}
+.etq h2{margin:0 0 4px} .etq p{margin:12px 0 0;font-size:13px;word-break:break-all;color:#555}
+.qr{display:flex;justify-content:center;margin-top:12px}
+@media print{.noprint{display:none}}
+</style>
+</head>
+<body>
+<p class="noprint">Imprima esta página (Ctrl+P) e cole cada etiqueta na sua máquina.</p>
+<div id="lista"></div>
+<script>
+// O link de cada máquina = endereço deste site + /index.html?m=CODIGO
+const base = location.href.replace(/qrcodes\.html.*$/, "index.html");
+const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+db.from("maquinas").select("codigo,nome").eq("ativa", true).order("codigo").then(({ data }) => {
+  for(const m of data){
+    const url = `${base}?m=${encodeURIComponent(m.codigo)}`;
+    const div = document.createElement("div"); div.className = "etq";
+    div.innerHTML = `<h2>${m.nome}</h2><div>Aponte a câmera para registrar</div><div class="qr"></div><p>${url}</p>`;
+    document.getElementById("lista").appendChild(div);
+    new QRCode(div.querySelector(".qr"), { text:url, width:240, height:240 });
+  }
+});
+</script>
+</body>
+</html>
