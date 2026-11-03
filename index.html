@@ -132,21 +132,37 @@ async function atualizar(){
     : "Nenhuma outra máquina em operação.";
 }
 
-// Lista as OPs que podem ser iniciadas (interrompidas aparecem primeiro)
+// Lista as OPs na ORDEM DO PCP.
+// 1º bloco: fila desta máquina (sem máquina definida ou definida para esta) -> a 1ª é a SUGERIDA
+// 2º bloco: OPs planejadas para outra máquina (o operador vê e pode escolher, se precisar otimizar)
+let sugerida = null;
 async function carregarOps(){
   const { data, error } = await db.rpc("ops_disponiveis");
   if(error){ mensagem("Erro: " + error.message, "erro"); return; }
   opsDisponiveis = data;
   if(!data.length){
     $("listaOps").innerHTML = "<p>Nenhuma OP disponível. Fale com o PCP.</p>";
-    $("btnIniciar").disabled = true; return;
+    $("btnIniciar").disabled = true; sugerida = null; return;
   }
   $("btnIniciar").disabled = false;
-  $("listaOps").innerHTML = data.map((o, i) => `
-    <label class="op-item"><input type="radio" name="op" value="${o.id}" ${i === 0 ? "checked" : ""}>
-      <b>OP ${texto(o.op)}</b> · ${texto(o.peca)} · ${o.quantidade} pç
-      ${o.situacao === "Interrompida" ? `<br><span class="tag t-Interrompida">⏸ Interrompida – retomar (${Math.round(o.minutos_total)} min feitos)</span>` : ""}
-    </label>`).join("");
+
+  const daMaquina = data.filter(o => !o.maquina_preferida_codigo || o.maquina_preferida_codigo === maquina);
+  const deOutras  = data.filter(o =>  o.maquina_preferida_codigo && o.maquina_preferida_codigo !== maquina);
+  sugerida = daMaquina[0] || null;
+  const marcada = (sugerida || deOutras[0]).id;
+
+  const item = (o, pos) => `
+    <label class="op-item"><input type="radio" name="op" value="${o.id}" ${o.id === marcada ? "checked" : ""}>
+      <b>${pos}º · OP ${texto(o.op)}</b> · ${texto(o.peca)} · ${o.quantidade} pç
+      ${o === sugerida ? `<br><span class="tag t-Em">★ Sugerida pelo PCP</span>` : ""}
+      ${o.maquina_preferida ? ` <span class="tag t-Aguardando">${texto(o.maquina_preferida)}</span>` : ""}
+      ${o.situacao === "Interrompida" ? ` <span class="tag t-Interrompida">⏸ retomar (${Math.round(o.minutos_total)} min feitos)</span>` : ""}
+    </label>`;
+
+  $("listaOps").innerHTML =
+    (daMaquina.length ? daMaquina.map((o, i) => item(o, i + 1)).join("") : "<p><i>Nenhuma OP na fila desta máquina.</i></p>") +
+    (deOutras.length ? `<h2 style="margin:18px 0 0;font-size:14px;color:#475467">Planejadas para outra máquina</h2>` +
+                       deOutras.map((o, i) => item(o, i + 1)).join("") : "");
   atualizarBotao();
   document.querySelectorAll('input[name="op"]').forEach(r => r.onchange = atualizarBotao);
 }
@@ -174,6 +190,11 @@ $("btnIniciar").onclick = () => {
   const opId = Number(document.querySelector('input[name="op"]:checked')?.value);
   if(!operador){ mensagem("Selecione o operador.", "erro"); return; }
   if(!opId){ mensagem("Escolha uma OP.", "erro"); return; }
+  // Escolheu fora da sequência? Pede confirmação (mas deixa, para otimizar quando preciso)
+  if(sugerida && opId !== sugerida.id){
+    const escolhida = opsDisponiveis.find(o => o.id === opId);
+    if(!confirm(`A OP sugerida é a ${sugerida.op}. Iniciar a OP ${escolhida.op} fora da sequência?`)) return;
+  }
   lembrar("operador", operador);
   executar($("btnIniciar"),
     () => db.rpc("iniciar_apontamento", { p_maquina: maquina, p_operador: operador, p_op: opId }),

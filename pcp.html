@@ -28,124 +28,173 @@ window.onerror = function(m){
       <div><label>Número da OP</label><input id="numero" placeholder="Ex.: 1025"></div>
       <div><label>Código da peça</label><input id="codigo" list="listaPecas" autocomplete="off" placeholder="Ex.: EX-025"></div>
       <div><label>Quantidade</label><input id="quantidade" type="number" min="1" inputmode="numeric"></div>
+      <div><label>Máquina</label><select id="maquinaNova" class="selMaq"></select></div>
       <div><button class="btn-verde" id="btnLancar" style="margin:0">+ Lançar OP</button></div>
     </div>
     <datalist id="listaPecas"></datalist>
-    <div style="font-size:13px;color:#475467;margin-top:8px">Código novo é cadastrado no catálogo automaticamente (sem preço).</div>
+    <div style="font-size:13px;color:#475467;margin-top:8px">A OP entra no fim da fila. Código novo é cadastrado no catálogo automaticamente (sem preço).</div>
     <div id="msg"></div>
   </div>
 
-  <!-- OPERADORES -->
+  <!-- PRÉVIA: o que cada CNC vai sugerir -->
   <div class="card">
-    <h2>Operadores</h2>
-    <div class="filtros">
-      <div><label>Novo operador</label><input id="novoOperador" placeholder="Nome"></div>
-      <div><button class="btn-azul" id="btnOperador" style="margin:0">+ Adicionar</button></div>
-    </div>
-    <div style="font-size:13px;color:#475467;margin-top:8px">Só operadores ativos aparecem no celular. Desativar não apaga o histórico.</div>
-    <div class="rolagem" style="margin-top:8px"><table id="tOperadores"></table></div>
+    <h2>O que cada CNC vai sugerir</h2>
+    <div class="kpis" id="previa"></div>
   </div>
 
-  <!-- LISTA DE OPs -->
+  <!-- FILA DE PRODUÇÃO -->
   <div class="card">
-    <h2>OPs</h2>
+    <h2>Fila de produção (OPs abertas)</h2>
+    <div style="font-size:13px;color:#475467;margin-bottom:8px">
+      Arraste as linhas (ou use ▲ ▼) para definir a ordem. Em <b>Máquina</b>, "Qualquer" deixa a OP na fila das duas CNCs.
+      O operador vê a lista inteira e pode escolher outra OP, se precisar.</div>
+    <div class="rolagem"><table id="tFila"></table></div>
+  </div>
+
+  <!-- HISTÓRICO -->
+  <div class="card">
+    <h2>Histórico</h2>
     <div class="filtros" style="margin-bottom:10px">
-      <div><label>Mostrar</label><select id="fStatus"><option value="Aberta">Abertas</option><option value="Concluída">Concluídas</option><option value="Cancelada">Canceladas</option><option value="">Todas</option></select></div>
+      <div><label>Mostrar</label><select id="fStatus"><option value="Concluída">Concluídas</option><option value="Cancelada">Canceladas</option></select></div>
       <div><label>Buscar</label><input id="fBusca" placeholder="OP ou peça"></div>
     </div>
-    <div class="rolagem"><table id="tOps"></table></div>
+    <div class="rolagem"><table id="tHist"></table></div>
   </div>
 </div>
 </main>
 
 <script>
-let ops = [];
+let fila = [], historico = [], maquinas = [], arrastando = null;
+const btnPeq = 'style="margin:0;padding:4px 10px;font-size:13px;width:auto"';
 
 async function abrirPcp(){
+  const { data: maqs } = await db.from("maquinas").select("codigo,nome").eq("ativa", true).order("codigo");
+  maquinas = maqs || [];
+  $("maquinaNova").innerHTML = opcoesMaquina("");
+  await carregarCatalogo();
+  await carregarTudo();
+  setInterval(() => { if(!arrastando) carregarFila(); }, 30000);   // atualiza a cada 30 s
+}
+const opcoesMaquina = sel => `<option value="">Qualquer</option>` +
+  maquinas.map(m => `<option value="${texto(m.codigo)}" ${m.codigo === sel ? "selected" : ""}>${texto(m.nome)}</option>`).join("");
+
+async function carregarCatalogo(){
   const { data: cat } = await db.from("catalogo").select("codigo").order("codigo");
   $("listaPecas").innerHTML = (cat || []).map(c => `<option value="${texto(c.codigo)}">`).join("");
-  await carregarOps();
-  carregarOperadores();
-  setInterval(carregarOps, 30000);        // atualiza sozinho a cada 30 s
 }
+async function carregarTudo(){ await carregarFila(); await carregarHistorico(); }
 
-async function carregarOps(){
-  let q = db.from("vw_ops").select("*").order("criada_em", { ascending:false }).limit(500);
-  if($("fStatus").value) q = q.eq("status", $("fStatus").value);
-  const { data, error } = await q;
+// ---------------------------------------------------------------
+// FILA: OPs abertas na ordem de prioridade
+// ---------------------------------------------------------------
+async function carregarFila(){
+  const { data, error } = await db.from("vw_ops").select("*").eq("status", "Aberta")
+                                  .order("prioridade", { ascending:true, nullsFirst:false }).order("criada_em");
   if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
-  ops = data;
-  desenhar();
+  fila = data;
+  desenharFila(); desenharPrevia();
 }
 
-function desenhar(){
+function desenharFila(){
+  $("tFila").innerHTML = `<tr><th></th><th class="n">#</th><th>OP</th><th>Peça</th><th class="n">Qtd</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th>Ordem</th><th></th></tr>` +
+    fila.map((o, i) => `<tr draggable="true" data-i="${i}" style="cursor:grab">
+      <td style="color:#98a2b3">⠿</td><td class="n"><b>${i + 1}</b></td>
+      <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td><td class="n">${o.quantidade}</td>
+      <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span>${o.situacao === "Em execução" ? " " + texto(o.ultima_maquina) : ""}</td>
+      <td><select onchange="mudarMaquina(${o.id}, this.value)" style="padding:6px;font-size:14px">${opcoesMaquina(o.maquina_preferida_codigo)}</select></td>
+      <td class="n">${horas(o.minutos_total)}</td>
+      <td><button class="btn-azul" ${btnPeq} onclick="mover(${i},-1)" ${i === 0 ? "disabled" : ""}>▲</button>
+          <button class="btn-azul" ${btnPeq} onclick="mover(${i},1)" ${i === fila.length - 1 ? "disabled" : ""}>▼</button></td>
+      <td>${o.situacao !== "Em execução" ? `<button class="btn-vermelho" ${btnPeq} onclick="cancelar(${o.id})">Cancelar</button>` : ""}</td>
+    </tr>`).join("") +
+    (fila.length ? "" : `<tr><td colspan="10"><i>Nenhuma OP aberta.</i></td></tr>`);
+
+  // Arrastar e soltar (computador)
+  document.querySelectorAll("#tFila tr[draggable]").forEach(tr => {
+    tr.ondragstart = () => { arrastando = Number(tr.dataset.i); tr.style.opacity = .4; };
+    tr.ondragend   = () => { arrastando = null; tr.style.opacity = 1; };
+    tr.ondragover  = e => e.preventDefault();
+    tr.ondrop      = e => { e.preventDefault(); reposicionar(arrastando, Number(tr.dataset.i)); };
+  });
+}
+
+// O que o celular de cada máquina vai mostrar como sugerida (mesma regra do index.html)
+function desenharPrevia(){
+  $("previa").innerHTML = maquinas.map(m => {
+    const disp = fila.filter(o => o.situacao !== "Em execução");
+    const daMaq = disp.filter(o => !o.maquina_preferida_codigo || o.maquina_preferida_codigo === m.codigo);
+    const rodando = fila.find(o => o.situacao === "Em execução" && o.ultima_maquina_codigo === m.codigo);
+    return `<div class="kpi"><b style="font-size:18px">${texto(m.nome)}</b>
+      ${rodando ? `<div style="margin-top:6px">🟢 Rodando: OP ${texto(rodando.op)}</div>` : ""}
+      <div style="margin-top:6px">★ Sugerida: <b>${daMaq[0] ? "OP " + texto(daMaq[0].op) + " · " + texto(daMaq[0].peca) : "–"}</b></div>
+      <div style="font-size:13px;color:#475467;margin-top:4px">Depois: ${daMaq.slice(1, 4).map(o => texto(o.op)).join(", ") || "–"}</div></div>`;
+  }).join("");
+}
+
+// Troca de posição e grava no banco
+function mover(i, passo){ reposicionar(i, i + passo); }
+async function reposicionar(de, para){
+  if(de === null || para < 0 || para >= fila.length || de === para) return;
+  const [item] = fila.splice(de, 1);      // tira da posição antiga...
+  fila.splice(para, 0, item);             // ...e coloca na nova
+  desenharFila(); desenharPrevia();
+  const { error } = await db.rpc("definir_ordem", { p_ids: fila.map(o => o.id) });
+  if(error){ alert(error.message); carregarFila(); }
+}
+
+async function mudarMaquina(id, codigo){
+  const { error } = await db.rpc("definir_maquina", { p_op: id, p_maquina: codigo });
+  if(error) alert(error.message);
+  carregarFila();
+}
+
+// ---------------------------------------------------------------
+// HISTÓRICO: concluídas / canceladas
+// ---------------------------------------------------------------
+async function carregarHistorico(){
+  const { data, error } = await db.from("vw_ops").select("*").eq("status", $("fStatus").value)
+                                  .order("concluida_em", { ascending:false, nullsFirst:false }).order("criada_em", { ascending:false }).limit(300);
+  if(error){ alert(error.message); return; }
+  historico = data; desenharHistorico();
+}
+function desenharHistorico(){
   const busca = $("fBusca").value.trim().toLowerCase();
-  const lista = ops.filter(o => !busca || o.op.toLowerCase().includes(busca) || o.peca.toLowerCase().includes(busca));
-  $("tOps").innerHTML = `<tr><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Produzida</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th class="n">Interrup.</th><th>Lançada</th><th></th></tr>` +
+  const lista = historico.filter(o => !busca || o.op.toLowerCase().includes(busca) || o.peca.toLowerCase().includes(busca));
+  $("tHist").innerHTML = `<tr><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Liberadas</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th class="n">Interrup.</th><th>Lançada</th><th>Encerrada</th></tr>` +
     lista.map(o => `<tr>
       <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td>
-      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_produzida ?? "–"}${o.motivo_divergencia ? `<br><span class="tag t-Interrompida" title="${texto(o.motivo_divergencia)}">⚠ ${texto(o.motivo_divergencia)}</span>` : ""}</td>
+      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_produzida ?? "–"}${o.motivo_divergencia ? `<br><span class="tag t-Interrompida">⚠ ${texto(o.motivo_divergencia)}</span>` : ""}</td>
       <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span></td>
-      <td>${texto(o.ultima_maquina ?? "–")}</td>
-      <td class="n">${horas(o.minutos_total)}</td><td class="n">${o.interrupcoes}</td>
-      <td>${dataHora(o.criada_em)}</td>
-      <td>${o.status === "Aberta" && o.situacao !== "Em execução"
-            ? `<button class="btn-vermelho" style="margin:0;padding:4px 10px;font-size:13px;width:auto" onclick="cancelar(${o.id})">Cancelar</button>` : ""}</td>
-    </tr>`).join("") +
+      <td>${texto(o.ultima_maquina ?? "–")}</td><td class="n">${horas(o.minutos_total)}</td><td class="n">${o.interrupcoes}</td>
+      <td>${dataHora(o.criada_em)}</td><td>${dataHora(o.concluida_em)}</td></tr>`).join("") +
     (lista.length ? "" : `<tr><td colspan="10"><i>Nenhuma OP.</i></td></tr>`);
 }
 
+// ---------------------------------------------------------------
+// Lançar e cancelar
+// ---------------------------------------------------------------
 $("btnLancar").onclick = async () => {
   const numero = $("numero").value.trim(), codigo = $("codigo").value.trim(), qtd = Number($("quantidade").value);
   if(!numero || !codigo || !(qtd > 0)){ $("msg").innerHTML = `<div class="msg erro">Preencha OP, código e quantidade.</div>`; return; }
   $("btnLancar").disabled = true;
-  const { error } = await db.rpc("criar_op", { p_numero: numero, p_codigo: codigo, p_quantidade: qtd });
+  const { error } = await db.rpc("criar_op", { p_numero: numero, p_codigo: codigo, p_quantidade: qtd, p_maquina: $("maquinaNova").value || null });
   $("btnLancar").disabled = false;
   if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
-  $("msg").innerHTML = `<div class="msg ok">OP ${texto(numero)} lançada.</div>`;
+  $("msg").innerHTML = `<div class="msg ok">OP ${texto(numero)} lançada no fim da fila.</div>`;
   $("numero").value = ""; $("quantidade").value = ""; $("numero").focus();
-  abrirPcpLista();
+  carregarCatalogo(); carregarFila();
 };
-async function abrirPcpLista(){
-  const { data: cat } = await db.from("catalogo").select("codigo").order("codigo");
-  $("listaPecas").innerHTML = (cat || []).map(c => `<option value="${texto(c.codigo)}">`).join("");
-  carregarOps();
-}
 
 async function cancelar(id){
-  const op = ops.find(o => o.id === id);
+  const op = fila.find(o => o.id === id);
   if(!confirm(`Cancelar a OP ${op.op}?`)) return;
   const { error } = await db.rpc("cancelar_op", { p_op: id });
   if(error) alert(error.message);
-  carregarOps();
+  carregarTudo();
 }
 
-// ---------- OPERADORES ----------
-async function carregarOperadores(){
-  const { data, error } = await db.from("operadores").select("id,nome,ativo").order("ativo", { ascending:false }).order("nome");
-  if(error){ alert(error.message); return; }
-  $("tOperadores").innerHTML = `<tr><th>Nome</th><th>Situação</th><th></th></tr>` +
-    data.map(o => `<tr><td>${texto(o.nome)}</td>
-      <td>${o.ativo ? '<span class="tag t-Em">Ativo</span>' : '<span class="tag t-Aguardando">Inativo</span>'}</td>
-      <td><button class="${o.ativo ? "btn-vermelho" : "btn-verde"}" style="margin:0;padding:4px 10px;font-size:13px;width:auto"
-           onclick="alternarOperador(${o.id}, ${!o.ativo})">${o.ativo ? "Desativar" : "Reativar"}</button></td></tr>`).join("");
-}
-async function alternarOperador(id, ativo){
-  const { error } = await db.from("operadores").update({ ativo }).eq("id", id);
-  if(error) alert(error.message);
-  carregarOperadores();
-}
-$("btnOperador").onclick = async () => {
-  const nome = $("novoOperador").value.trim().replace(/\s+/g, " ");
-  if(!nome) return;
-  const { error } = await db.from("operadores").insert({ nome });
-  if(error){ alert(error.code === "23505" ? "Esse operador já existe." : error.message); return; }
-  $("novoOperador").value = "";
-  carregarOperadores();
-};
-
-$("fStatus").onchange = carregarOps;
-$("fBusca").oninput = desenhar;
+$("fStatus").onchange = carregarHistorico;
+$("fBusca").oninput = desenharHistorico;
 protegerPagina(abrirPcp);
 </script>
 </body>
