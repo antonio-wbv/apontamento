@@ -28,7 +28,7 @@ function protegerPagina(abrir){
     if(!user){ $("loginCard").classList.remove("oculto"); return; }
     $("loginCard").classList.add("oculto");
     $("painel").classList.remove("oculto");
-    $("usuario").innerHTML = `${texto(user.email)} · <a href="#" id="sair" style="color:#fff">Sair</a>`;
+    $("usuario").innerHTML = `${texto(user.email)} · <a href="#" id="sair">Sair</a>`;
     $("sair").onclick = async e => { e.preventDefault(); await db.auth.signOut(); location.reload(); };
     abrir();
   }

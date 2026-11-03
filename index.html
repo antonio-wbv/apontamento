@@ -29,6 +29,19 @@ window.onerror = function(m){
       <h2>Encerrar lote</h2>
       <label for="qtdProduzida">Quantidade produzida</label>
       <input id="qtdProduzida" type="number" min="0" inputmode="numeric">
+      <!-- Só aparece se a quantidade for MENOR que a da OP -->
+      <div id="divergencia" class="oculto">
+        <div class="msg erro" id="avisoDivergencia" style="margin-top:12px"></div>
+        <label for="motivoDiv">Motivo da divergência</label>
+        <select id="motivoDiv">
+          <option value="">– selecione –</option>
+          <option>Material faltando</option><option>Falha na usinagem</option><option>Outros</option>
+        </select>
+        <div id="outrosBox" class="oculto">
+          <label for="outrosTexto">Descreva o motivo</label>
+          <input id="outrosTexto" placeholder="Ex.: ferramenta quebrou">
+        </div>
+      </div>
       <button id="btnEncerrar" class="btn-verde">✔ ENCERRAR LOTE</button>
     </div>
     <div class="card">
@@ -63,6 +76,7 @@ const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
 const maquina = new URLSearchParams(location.search).get("m");
 const $ = id => document.getElementById(id);
 let opsDisponiveis = [];
+let qtdLote = 0;          // quantidade da OP em andamento nesta máquina
 
 function lembrar(k, v){ try{ localStorage.setItem(k, v) }catch(e){} }
 function lembrado(k){ try{ return localStorage.getItem(k) }catch(e){ return null } }
@@ -103,7 +117,10 @@ async function atualizar(){
   if(minha){
     $("abertaTexto").innerHTML =
       `OP <b>${texto(minha.op)}</b> · Peça <b>${texto(minha.peca)}</b><br>Lote: ${minha.quantidade} peças<br>Operador: ${texto(minha.operador)}<br>Desde ${hora(minha.inicio)} · há ${minutos(minha.inicio)} min`;
+    qtdLote = minha.quantidade;
     $("qtdProduzida").value = minha.quantidade;          // já vem com a quantidade da OP
+    $("motivoDiv").value = ""; $("outrosTexto").value = "";
+    verificarDivergencia();
     $("telaAberta").classList.remove("oculto"); $("telaLivre").classList.add("oculto");
   } else {
     await carregarOps();
@@ -163,12 +180,34 @@ $("btnIniciar").onclick = () => {
     `▶ OP iniciada às ${hora(new Date())}.`);
 };
 
+// Se produziu MENOS que a OP, mostra o campo de motivo
+function verificarDivergencia(){
+  const qtd = Number($("qtdProduzida").value);
+  const menor = $("qtdProduzida").value !== "" && qtd < qtdLote;
+  $("divergencia").classList.toggle("oculto", !menor);
+  $("avisoDivergencia").textContent = `Faltam ${qtdLote - qtd} peças (${qtd} de ${qtdLote}). Informe o motivo.`;
+  $("outrosBox").classList.toggle("oculto", $("motivoDiv").value !== "Outros");
+}
+$("qtdProduzida").oninput = verificarDivergencia;
+$("motivoDiv").onchange = verificarDivergencia;
+
 $("btnEncerrar").onclick = () => {
   const qtd = Number($("qtdProduzida").value);
   if($("qtdProduzida").value === "" || qtd < 0){ mensagem("Informe a quantidade produzida.", "erro"); return; }
-  if(!confirm(`Encerrar o lote com ${qtd} peças? A OP será concluída.`)) return;
+
+  let motivo = null;
+  if(qtd < qtdLote){
+    motivo = $("motivoDiv").value;
+    if(!motivo){ mensagem("Selecione o motivo da divergência.", "erro"); return; }
+    if(motivo === "Outros"){
+      const desc = $("outrosTexto").value.trim();
+      if(!desc){ mensagem("Descreva o motivo em 'Outros'.", "erro"); return; }
+      motivo = "Outros: " + desc;
+    }
+  }
+  if(!confirm(`Encerrar o lote com ${qtd} de ${qtdLote} peças? A OP será concluída.`)) return;
   executar($("btnEncerrar"),
-    () => db.rpc("encerrar_lote", { p_maquina: maquina, p_quantidade: qtd }),
+    () => db.rpc("encerrar_lote", { p_maquina: maquina, p_quantidade: qtd, p_motivo: motivo }),
     `✔ Lote encerrado com ${qtd} peças.`);
 };
 

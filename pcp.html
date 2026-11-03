@@ -18,7 +18,7 @@ window.onerror = function(m){
 <script src="login.js"></script>
 </head>
 <body>
-<header><h1>PCP – Ordens de Produção</h1><small id="usuario"></small></header>
+<header class="com-logo"><img src="logo.png" alt="Applic Technology"><div><h1>PCP – Ordens de Produção</h1><small id="usuario"></small></div></header>
 <main>
 <div id="painel" class="oculto">
   <!-- LANÇAR OP -->
@@ -84,7 +84,7 @@ function desenhar(){
   $("tOps").innerHTML = `<tr><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Produzida</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th class="n">Interrup.</th><th>Lançada</th><th></th></tr>` +
     lista.map(o => `<tr>
       <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td>
-      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_produzida ?? "–"}</td>
+      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_produzida ?? "–"}${o.motivo_divergencia ? `<br><span class="tag t-Interrompida" title="${texto(o.motivo_divergencia)}">⚠ ${texto(o.motivo_divergencia)}</span>` : ""}</td>
       <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span></td>
       <td>${texto(o.ultima_maquina ?? "–")}</td>
       <td class="n">${horas(o.minutos_total)}</td><td class="n">${o.interrupcoes}</td>

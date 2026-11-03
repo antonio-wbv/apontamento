@@ -14,34 +14,45 @@ window.onerror = function(m){
 };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="config.js"></script>
 <script src="login.js"></script>
 </head>
 <body>
-<header><h1>Relatório de Produção – Usinagem</h1><small id="usuario"></small></header>
+<header class="com-logo"><img src="logo.png" alt="Applic Technology"><div><h1>Relatório de Produção – Usinagem</h1><small id="usuario"></small></div></header>
 <main>
 <div id="painel" class="oculto">
   <div class="card filtros">
     <div><label>Data inicial</label><input type="date" id="dIni"></div>
     <div><label>Data final</label><input type="date" id="dFim"></div>
-    <div><label>Turno</label><select id="fTurno"><option>Todos</option><option>Manhã</option><option>Tarde</option><option>Noite</option><option>Fora de turno</option></select></div>
+    <div><label>Turno</label><select id="fTurno"><option>Todos</option><option>Manhã</option><option>Tarde</option><option>Noite</option></select></div>
     <div><label>Máquina</label><select id="fMaq"><option value="">Todas</option></select></div>
     <div><button class="btn-azul" id="btnFiltrar" style="margin:0">Filtrar</button></div>
+    <div><button class="btn-vermelho" id="btnPdf" style="margin:0">Exportar PDF</button></div>
     <div><button class="btn-verde" id="btnCsv" style="margin:0">Exportar CSV</button></div>
   </div>
   <div style="font-size:13px;color:#475467;margin:-6px 0 12px">A produção entra no dia, turno e máquina em que o lote foi <b>encerrado</b>.</div>
 
   <div class="kpis">
     <div class="kpi">Lotes encerrados<b id="kLotes">0</b></div>
-    <div class="kpi">Peças produzidas<b id="kPecas">0</b></div>
+    <div class="kpi">Peças liberadas<b id="kPecas">0</b></div>
     <div class="kpi">Valor total<b id="kValor">R$ 0,00</b></div>
     <div class="kpi">Tempo médio por peça<b id="kTempo">–</b></div>
     <div class="kpi">Interrupções<b id="kInt">0</b></div>
-    <div class="kpi">Peças sem preço<b id="kSemPreco">0</b></div>
+    <div class="kpi">Lotes com divergência<b id="kDiv">0</b></div>
   </div>
 
-  <div class="card" style="margin-top:14px"><h2>Por peça</h2><div class="rolagem"><table id="tPeca"></table></div></div>
-  <div class="card"><h2>Por turno e máquina</h2><div class="rolagem"><table id="tTurno"></table></div></div>
+  <div class="card" style="margin-top:14px"><h2>Peças liberadas por máquina</h2><div class="rolagem"><table id="tMaq"></table></div></div>
+  <div class="card">
+    <h2>Execução por turno</h2>
+    <div style="font-size:13px;color:#475467;margin-bottom:8px">
+      <b>% das peças</b> = participação do turno no total liberado. <b>% execução</b> = horas com OP em andamento ÷ horas disponíveis do turno
+      (duração do turno × máquinas × dias em que o turno trabalhou).</div>
+    <div class="rolagem"><table id="tTurno"></table></div>
+  </div>
+  <div class="card"><h2>Por peça</h2><div class="rolagem"><table id="tPeca"></table></div></div>
+  <div class="card"><h2>Lotes encerrados com divergência</h2><div class="rolagem"><table id="tDiv"></table></div></div>
   <div class="card"><h2>Lotes encerrados</h2><div class="rolagem"><table id="tLotes"></table></div></div>
   <div class="card"><h2>Interrupções no período</h2><div class="rolagem"><table id="tInt"></table></div></div>
   <div class="card">
@@ -53,18 +64,24 @@ window.onerror = function(m){
 </main>
 
 <script>
-let lotes = [], interrupcoes = [];
+// Turnos e duração em horas (Noite atravessa a meia-noite)
+const TURNOS = [
+  { nome:"Manhã", ini:[7,0],   fim:[12,0],  horas:5   },
+  { nome:"Tarde", ini:[12,0],  fim:[22,0],  horas:10  },
+  { nome:"Noite", ini:[22,0],  fim:[30,30], horas:8.5 }   // 30:30 = 06:30 do dia seguinte
+];
+let lotes = [], interrupcoes = [], sessoes = [], maquinas = [], resumo = {};
 
 async function abrirRelatorio(){
-  const hoje = new Date(), iso = d => d.toLocaleDateString("sv-SE");   // AAAA-MM-DD no fuso local
+  const hoje = new Date(), iso = d => d.toLocaleDateString("sv-SE");   // AAAA-MM-DD
   $("dIni").value = iso(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
   $("dFim").value = iso(hoje);
-  const { data: maqs } = await db.from("maquinas").select("codigo,nome").order("codigo");
+  const { data: maqs } = await db.from("maquinas").select("codigo,nome").eq("ativa", true).order("codigo");
+  maquinas = maqs;
   maqs.forEach(m => $("fMaq").insertAdjacentHTML("beforeend", `<option value="${texto(m.codigo)}">${texto(m.nome)}</option>`));
   filtrar(); carregarPrecos();
 }
 
-// Busca em "páginas" de 1000 linhas (limite do Supabase)
 async function buscarTudo(montarConsulta){
   let tudo = [];
   for(let de = 0; ; de += 1000){
@@ -74,6 +91,7 @@ async function buscarTudo(montarConsulta){
     if(data.length < 1000) return tudo;
   }
 }
+const diaAnterior = s => { const [y,m,d] = s.split("-").map(Number); return new Date(y, m-1, d-1).toLocaleDateString("sv-SE"); };
 
 async function filtrar(){
   const turno = $("fTurno").value, maq = $("fMaq").value;
@@ -85,62 +103,189 @@ async function filtrar(){
     if(maq) q = q.eq("ultima_maquina_codigo", maq);
     return q;
   });
-  interrupcoes = await buscarTudo(() => {
-    let q = db.from("vw_apontamentos").select("*").not("fim", "is", null).neq("motivo_fim", "Lote encerrado")
-              .gte("data_turno", $("dIni").value).lte("data_turno", $("dFim").value)
+  // Todos os trechos de trabalho do período (para calcular a % de execução)
+  sessoes = await buscarTudo(() => {
+    let q = db.from("vw_apontamentos").select("inicio,fim,motivo_fim,maquina_codigo,maquina,op,peca,operador,minutos,turno,data_turno")
+              .gte("data_turno", diaAnterior($("dIni").value)).lte("data_turno", $("dFim").value)
               .order("inicio", { ascending:false });
-    if(turno !== "Todos") q = q.eq("turno", turno);
     if(maq) q = q.eq("maquina_codigo", maq);
     return q;
   });
-  desenhar();
+  interrupcoes = sessoes.filter(a => a.fim && a.motivo_fim !== "Lote encerrado"
+      && a.data_turno >= $("dIni").value && (turno === "Todos" || a.turno === turno));
+  calcular(); desenhar();
 }
 
-// Soma por uma chave (ex.: peça, ou turno+máquina)
-function agrupar(chave){
-  const g = {};
-  for(const l of lotes){
-    const k = chave(l);
-    g[k] ??= { lotes:0, pecas:0, valor:0, min:0 };
-    g[k].lotes++; g[k].pecas += l.quantidade_produzida; g[k].valor += Number(l.valor); g[k].min += Number(l.minutos_total);
+// ---------------------------------------------------------------
+// Horas em execução por turno: cada trecho (início→fim) é "recortado"
+// nas janelas de cada turno, dia a dia, e os minutos que caem dentro somam.
+// ---------------------------------------------------------------
+function horasExecucao(){
+  const exec = {}, dias = {};
+  TURNOS.forEach(t => { exec[t.nome] = 0; dias[t.nome] = new Set(); });
+  const [y1,m1,d1] = $("dIni").value.split("-").map(Number), [y2,m2,d2] = $("dFim").value.split("-").map(Number);
+  const limIni = new Date(y1, m1-1, d1), limFim = new Date(y2, m2-1, d2);
+  for(const s of sessoes){
+    const ini = new Date(s.inicio), fim = s.fim ? new Date(s.fim) : new Date();
+    // percorre do dia anterior ao início até o dia do fim
+    for(let d = new Date(ini.getFullYear(), ini.getMonth(), ini.getDate() - 1); d <= fim; d.setDate(d.getDate() + 1)){
+      if(d < limIni || d > limFim) continue;
+      for(const t of TURNOS){
+        const jIni = new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.ini[0], t.ini[1]);
+        const jFim = new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.fim[0], t.fim[1]);
+        const sobreposicao = Math.min(fim, jFim) - Math.max(ini, jIni);          // milissegundos
+        if(sobreposicao > 0){ exec[t.nome] += sobreposicao / 3600000; dias[t.nome].add(d.toDateString()); }
+      }
+    }
   }
-  return g;
+  return { exec, dias };
 }
-const porPeca = o => o.pecas ? (o.min / o.pecas).toFixed(1) + " min" : "–";
+
+function calcular(){
+  const turno = $("fTurno").value;
+  const soma = lista => lista.reduce((a,l) => ({ lotes:a.lotes+1, pecas:a.pecas+l.quantidade_produzida, valor:a.valor+Number(l.valor),
+                                                  min:a.min+Number(l.minutos_total), div:a.div+(l.motivo_divergencia ? 1 : 0) }),
+                                        { lotes:0, pecas:0, valor:0, min:0, div:0 });
+  const total = soma(lotes);
+  const nMaq = $("fMaq").value ? 1 : maquinas.length;
+  const { exec, dias } = horasExecucao();
+
+  const porMaquina = maquinas.filter(m => !$("fMaq").value || m.codigo === $("fMaq").value)
+    .map(m => ({ nome:m.nome, ...soma(lotes.filter(l => l.ultima_maquina_codigo === m.codigo)) }));
+
+  const porTurno = TURNOS.filter(t => turno === "Todos" || t.nome === turno).map(t => {
+    const s = soma(lotes.filter(l => l.turno_conclusao === t.nome));
+    const disp = t.horas * nMaq * dias[t.nome].size;
+    return { nome:t.nome, ...s, pctPecas: total.pecas ? s.pecas / total.pecas : 0,
+             hExec: exec[t.nome], hDisp: disp, pctExec: disp ? exec[t.nome] / disp : 0 };
+  });
+
+  const porPeca = {};
+  lotes.forEach(l => { porPeca[l.peca] ??= []; porPeca[l.peca].push(l); });
+  resumo = { total, porMaquina, porTurno,
+             porPeca: Object.entries(porPeca).map(([p, ls]) => ({ peca:p, ...soma(ls) })).sort((a,b) => b.valor - a.valor || b.pecas - a.pecas),
+             divergencias: lotes.filter(l => l.motivo_divergencia) };
+}
+
+const pct = v => (v * 100).toLocaleString("pt-BR", { maximumFractionDigits:1 }) + "%";
+const h1 = v => v.toLocaleString("pt-BR", { maximumFractionDigits:1 }) + " h";
+const porPecaTempo = o => o.pecas ? (o.min / o.pecas).toFixed(1) + " min" : "–";
+const barra = v => `<div class="barra"><span style="width:${Math.min(100, v*100)}%"></span></div>`;
 
 function desenhar(){
-  const t = agrupar(() => "t").t || { lotes:0, pecas:0, valor:0, min:0 };
+  const t = resumo.total;
   $("kLotes").textContent = t.lotes;
   $("kPecas").textContent = t.pecas.toLocaleString("pt-BR");
   $("kValor").textContent = brl(t.valor);
-  $("kTempo").textContent = porPeca(t);
+  $("kTempo").textContent = porPecaTempo(t);
   $("kInt").textContent = interrupcoes.length;
+  $("kDiv").textContent = t.div;
 
-  const linha = (cols) => `<tr>${cols.map(c => `<td${typeof c === "number" || /^R\$|min$|h\d/.test(c) ? ' class="n"' : ""}>${c}</td>`).join("")}</tr>`;
+  $("tMaq").innerHTML = `<tr><th>Máquina</th><th class="n">Lotes</th><th class="n">Peças liberadas</th><th class="n">% das peças</th><th class="n">Valor</th><th class="n">Lotes c/ divergência</th></tr>` +
+    resumo.porMaquina.map(m => `<tr><td>${texto(m.nome)}</td><td class="n">${m.lotes}</td><td class="n"><b>${m.pecas}</b></td>
+      <td class="n">${pct(t.pecas ? m.pecas / t.pecas : 0)}</td><td class="n">${brl(m.valor)}</td><td class="n">${m.div}</td></tr>`).join("");
 
-  const gp = agrupar(l => l.peca);
+  $("tTurno").innerHTML = `<tr><th>Turno</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">% das peças</th><th class="n">Horas em execução</th><th class="n">Horas disponíveis</th><th class="n">% execução</th><th></th></tr>` +
+    resumo.porTurno.map(r => `<tr><td>${r.nome}</td><td class="n">${r.lotes}</td><td class="n">${r.pecas}</td><td class="n">${pct(r.pctPecas)}</td>
+      <td class="n">${h1(r.hExec)}</td><td class="n">${h1(r.hDisp)}</td><td class="n"><b>${pct(r.pctExec)}</b></td><td>${barra(r.pctExec)}</td></tr>`).join("");
+
   $("tPeca").innerHTML = `<tr><th>Peça</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">Valor</th><th class="n">Tempo total</th><th class="n">Tempo/peça</th></tr>` +
-    Object.entries(gp).sort((a,b) => b[1].valor - a[1].valor || b[1].pecas - a[1].pecas)
-      .map(([k,o]) => linha([texto(k), o.lotes, o.pecas, brl(o.valor), horas(o.min), porPeca(o)])).join("");
+    resumo.porPeca.map(o => `<tr><td>${texto(o.peca)}</td><td class="n">${o.lotes}</td><td class="n">${o.pecas}</td><td class="n">${brl(o.valor)}</td><td class="n">${horas(o.min)}</td><td class="n">${porPecaTempo(o)}</td></tr>`).join("");
 
-  const gt = agrupar(l => l.turno_conclusao + "|" + l.ultima_maquina);
-  $("tTurno").innerHTML = `<tr><th>Turno</th><th>Máquina</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">Valor</th></tr>` +
-    Object.entries(gt).sort().map(([k,o]) => { const [tu,m] = k.split("|"); return linha([tu, texto(m), o.lotes, o.pecas, brl(o.valor)]); }).join("");
+  $("tDiv").innerHTML = `<tr><th>Encerrado</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Liberadas</th><th class="n">Faltaram</th><th>Motivo</th></tr>` +
+    (resumo.divergencias.map(l => `<tr><td>${dataHora(l.concluida_em)}</td><td>${texto(l.ultima_maquina)}</td><td>${texto(l.op)}</td><td>${texto(l.peca)}</td>
+      <td class="n">${l.quantidade}</td><td class="n">${l.quantidade_produzida}</td><td class="n"><b>${l.quantidade - l.quantidade_produzida}</b></td><td>${texto(l.motivo_divergencia)}</td></tr>`).join("")
+     || `<tr><td colspan="8"><i>Nenhuma divergência no período.</i></td></tr>`);
 
-  $("tLotes").innerHTML = `<tr><th>Encerrado</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Produzida</th><th class="n">Preço</th><th class="n">Valor</th><th class="n">Tempo</th><th class="n">Interrup.</th></tr>` +
-    lotes.slice(0,500).map(l => linha([dataHora(l.concluida_em), l.turno_conclusao, texto(l.ultima_maquina), texto(l.op), texto(l.peca), l.quantidade, l.quantidade_produzida,
-      l.preco === null ? '<span class="tag t-Interrompida">sem preço</span>' : brl(l.preco), brl(l.valor), horas(l.minutos_total), l.interrupcoes])).join("");
+  $("tLotes").innerHTML = `<tr><th>Encerrado</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Liberadas</th><th class="n">Preço</th><th class="n">Valor</th><th class="n">Tempo</th><th class="n">Interrup.</th></tr>` +
+    lotes.slice(0,500).map(l => `<tr><td>${dataHora(l.concluida_em)}</td><td>${l.turno_conclusao}</td><td>${texto(l.ultima_maquina)}</td><td>${texto(l.op)}</td><td>${texto(l.peca)}</td>
+      <td class="n">${l.quantidade}</td><td class="n">${l.quantidade_produzida}</td>
+      <td class="n">${l.preco === null ? '<span class="tag t-Interrompida">sem preço</span>' : brl(l.preco)}</td><td class="n">${brl(l.valor)}</td>
+      <td class="n">${horas(l.minutos_total)}</td><td class="n">${l.interrupcoes}</td></tr>`).join("");
 
   $("tInt").innerHTML = `<tr><th>Início</th><th>Fim</th><th>Máquina</th><th>OP</th><th>Peça</th><th>Operador</th><th class="n">Minutos</th><th>Motivo</th></tr>` +
-    interrupcoes.slice(0,500).map(a => linha([dataHora(a.inicio), dataHora(a.fim), texto(a.maquina), texto(a.op), texto(a.peca), texto(a.operador), Number(a.minutos), texto(a.motivo_fim)])).join("");
+    interrupcoes.slice(0,500).map(a => `<tr><td>${dataHora(a.inicio)}</td><td>${dataHora(a.fim)}</td><td>${texto(a.maquina)}</td><td>${texto(a.op)}</td>
+      <td>${texto(a.peca)}</td><td>${texto(a.operador)}</td><td class="n">${Number(a.minutos)}</td><td>${texto(a.motivo_fim)}</td></tr>`).join("");
 }
+
+// ---------- PDF ----------
+async function logoBase64(){
+  try{
+    const blob = await (await fetch("logo.png")).blob();
+    return await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); });
+  }catch(e){ return null; }
+}
+
+$("btnPdf").onclick = async () => {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:"mm", format:"a4" });
+  const azul = [31,56,100], dourado = [196,173,130];
+  const br = s => s.split("-").reverse().join("/");
+  const t = resumo.total;
+
+  // Cabeçalho: logo + título + filtros
+  const logo = await logoBase64();
+  if(logo) doc.addImage(logo, "PNG", 14, 10, 46, 16);
+  doc.setFont("helvetica","bold"); doc.setFontSize(15); doc.setTextColor(...azul);
+  doc.text("Relatório de Produção – Usinagem", 196, 16, { align:"right" });
+  doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(80);
+  const maqTxt = $("fMaq").value ? $("fMaq").selectedOptions[0].text : "Todas";
+  doc.text(`Período: ${br($("dIni").value)} a ${br($("dFim").value)}  ·  Turno: ${$("fTurno").value}  ·  Máquina: ${maqTxt}`, 196, 22, { align:"right" });
+  doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, 196, 27, { align:"right" });
+  doc.setDrawColor(...dourado); doc.setLineWidth(0.8); doc.line(14, 31, 196, 31);
+
+  // Indicadores
+  doc.autoTable({ startY:35, theme:"plain", styles:{ halign:"center", fontSize:9, textColor:80 },
+    head:[["Lotes encerrados","Peças liberadas","Valor total","Tempo médio/peça","Interrupções","Lotes c/ divergência"]],
+    body:[[t.lotes, t.pecas.toLocaleString("pt-BR"), brl(t.valor), porPecaTempo(t), interrupcoes.length, t.div]],
+    bodyStyles:{ fontStyle:"bold", fontSize:12, textColor:azul } });
+
+  let espacoExtra = 0;     // espaço para notas de rodapé de uma tabela
+  const tabela = (titulo, head, body, numCols) => {
+    let y = doc.lastAutoTable.finalY + 9 + espacoExtra; espacoExtra = 0;
+    if(y > 260){ doc.addPage(); y = 20; }
+    doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(...azul); doc.text(titulo, 14, y);
+    const colunas = {}; numCols.forEach(i => colunas[i] = { halign:"right" });
+    doc.autoTable({ startY:y + 2, head:[head], body, theme:"grid", styles:{ fontSize:8.5 },
+      headStyles:{ fillColor:azul }, alternateRowStyles:{ fillColor:[245,247,250] }, columnStyles:colunas });
+  };
+
+  tabela("Peças liberadas por máquina",
+    ["Máquina","Lotes","Peças liberadas","% das peças","Valor","Lotes c/ divergência"],
+    resumo.porMaquina.map(m => [m.nome, m.lotes, m.pecas, pct(t.pecas ? m.pecas / t.pecas : 0), brl(m.valor), m.div])
+      .concat([["Total", t.lotes, t.pecas, pct(t.pecas ? 1 : 0), brl(t.valor), t.div]]), [1,2,3,4,5]);
+
+  tabela("Execução por turno",
+    ["Turno","Lotes","Peças","% das peças","Horas em execução","Horas disponíveis","% execução"],
+    resumo.porTurno.map(r => [r.nome, r.lotes, r.pecas, pct(r.pctPecas), h1(r.hExec), h1(r.hDisp), pct(r.pctExec)]), [1,2,3,4,5,6]);
+  doc.setFont("helvetica","normal"); doc.setFontSize(7.5); doc.setTextColor(110);
+  doc.text("% execução = horas com OP em andamento ÷ (duração do turno × máquinas × dias em que o turno trabalhou). Turnos: Manhã 07–12h, Tarde 12–22h, Noite 22–06h30.",
+           14, doc.lastAutoTable.finalY + 4, { maxWidth:182 });
+  espacoExtra = 6;
+
+  if(resumo.divergencias.length)
+    tabela("Lotes encerrados com divergência",
+      ["Encerrado","Máquina","OP","Peça","Qtd OP","Liberadas","Faltaram","Motivo"],
+      resumo.divergencias.map(l => [dataHora(l.concluida_em), l.ultima_maquina, l.op, l.peca, l.quantidade, l.quantidade_produzida,
+                                    l.quantidade - l.quantidade_produzida, l.motivo_divergencia]), [4,5,6]);
+
+  tabela("Por peça", ["Peça","Lotes","Peças","Valor","Tempo total","Tempo/peça"],
+    resumo.porPeca.map(o => [o.peca, o.lotes, o.pecas, brl(o.valor), horas(o.min), porPecaTempo(o)]), [1,2,3,4,5]);
+
+  // Rodapé com número da página
+  const n = doc.getNumberOfPages();
+  for(let i = 1; i <= n; i++){
+    doc.setPage(i); doc.setFontSize(8); doc.setTextColor(140);
+    doc.text(`Applic Technology · Página ${i} de ${n}`, 105, 290, { align:"center" });
+  }
+  doc.save(`relatorio_producao_${$("dIni").value}_a_${$("dFim").value}.pdf`);
+};
 
 // ---------- PREÇOS ----------
 async function carregarPrecos(){
   const { data, error } = await db.from("catalogo").select("id,codigo,preco");
   if(error){ alert(error.message); return; }
   data.sort((a,b) => (a.preco !== null) - (b.preco !== null) || a.codigo.localeCompare(b.codigo));
-  $("kSemPreco").textContent = data.filter(c => c.preco === null).length;
   $("tPrecos").innerHTML = `<tr><th>Código da peça</th><th>Preço unitário (R$)</th><th></th></tr>` +
     data.map(c => `<tr style="${c.preco === null ? "background:#fff7d6" : ""}"><td>${texto(c.codigo)}</td>
       <td><input id="preco${c.id}" type="number" step="0.01" min="0" value="${c.preco ?? ""}" style="width:130px;padding:6px"></td>
@@ -153,12 +298,12 @@ async function salvarPreco(id){
   carregarPrecos(); filtrar();
 }
 
-// ---------- CSV (abre no Excel) ----------
+// ---------- CSV ----------
 $("btnCsv").onclick = () => {
-  const cab = ["Encerrado","Turno","Data turno","Máquina","OP","Peça","Qtd OP","Produzida","Preço","Valor","Minutos","Interrupções"];
+  const cab = ["Encerrado","Turno","Data turno","Máquina","OP","Peça","Qtd OP","Liberadas","Motivo divergência","Preço","Valor","Minutos","Interrupções"];
   const num = v => v == null ? "" : String(v).replace(".", ",");
   const linhas = lotes.map(l => [new Date(l.concluida_em).toLocaleString("pt-BR"), l.turno_conclusao, l.data_turno_conclusao, l.ultima_maquina, l.op, l.peca,
-    l.quantidade, l.quantidade_produzida, num(l.preco), num(l.valor), num(l.minutos_total), l.interrupcoes].join(";"));
+    l.quantidade, l.quantidade_produzida, l.motivo_divergencia ?? "", num(l.preco), num(l.valor), num(l.minutos_total), l.interrupcoes].join(";"));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + [cab.join(";")].concat(linhas).join("\n")], { type:"text/csv" }));
   a.download = `lotes_${$("dIni").value}_a_${$("dFim").value}.csv`;
