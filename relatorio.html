@@ -54,7 +54,7 @@ window.onerror = function(m){
     <div class="kpis" id="oeeFatores"></div>
     <div style="font-size:12px;color:#475467;margin-top:10px;line-height:1.6">
       <b>OEE = Disponibilidade × Performance × Qualidade.</b>
-      <b>Disponibilidade</b> = horas com OP rodando ÷ horas planejadas (turnos de segunda a sexta, exceto feriados, até agora; sábado, domingo e feriado não contam).
+      <b>Disponibilidade</b> = horas com OP rodando ÷ horas planejadas (turnos de segunda a sexta, exceto feriados, até agora, sem as refeições: Tarde 18h–19h e Noite 02h–03h; sábado, domingo e feriado não contam). Se a máquina rodar durante a refeição, conta como produção (máx. 100%).
       <b>Performance</b> = (peças boas + refugo) × tempo padrão ÷ tempo real dos lotes (máx. 100%).
       <b>Qualidade</b> = peças aprovadas ÷ (aprovadas + refugo). Refugo = reprovadas na inspeção + faltantes com motivo "Falha na usinagem".</div>
   </div>
@@ -98,6 +98,9 @@ const TURNOS = [                                             // minutos desde 00
   { nome:"Noite", ini:22*60, fim:30*60 + 30 }                // até 06:30 do dia seguinte
 ];
 const FORA = "Fora de turno";
+// Refeições: saem das horas PLANEJADAS do OEE (minutos desde 00:00 do dia do turno)
+const PAUSAS = { "Tarde": [[18*60, 19*60]],              // janta 18h–19h
+                 "Noite": [[26*60, 27*60]] };            // 02h–03h do dia seguinte (= 26h–27h)
 let lotes = [], partes = [], interrupcoes = [], sessoes = [], sessoesLotes = [], maquinas = [], tempoPeca = {}, resumo = {};
 let feriados = new Set();
 const isoDia = d => d.toLocaleDateString("sv-SE");
@@ -214,7 +217,13 @@ function tempos(){
     if(!diaDeTurno(d)) continue;
     for(const t of TURNOS.filter(t => nomes.includes(t.nome))){
       const jIni = d.getTime() + t.ini * 60000, jFim = Math.min(d.getTime() + t.fim * 60000, agora);
-      if(jFim > jIni) maqs.forEach(m => plan[m][t.nome] += (jFim - jIni) / 3600000);
+      if(jFim <= jIni) continue;
+      let h = (jFim - jIni) / 3600000;
+      for(const [pa, pb] of PAUSAS[t.nome] || []){                       // desconta a refeição
+        const pIni = d.getTime() + pa * 60000, pFim = Math.min(d.getTime() + pb * 60000, jFim);
+        if(pFim > pIni) h -= (pFim - pIni) / 3600000;
+      }
+      maqs.forEach(m => plan[m][t.nome] += h);
     }
   }
   // horas rodando: recorte de cada trecho, só a parte dentro do período
@@ -264,7 +273,7 @@ function somar(lista){                                 // lista de partes {l, fr
   return r;
 }
 function oee(r, horasRun, horasPlan){
-  const A = horasPlan > 0 ? horasRun / horasPlan : null;
+  const A = horasPlan > 0 ? Math.min(1, horasRun / horasPlan) : null;   // máquina rodando na refeição pode passar de 100%: limita
   const P = r.realComTempo > 0 ? Math.min(1, r.ideal / r.realComTempo) : null;
   const Q = (r.boas + r.refugo) > 0 ? r.boas / (r.boas + r.refugo) : null;
   return { A, P, Q, OEE: A != null && P != null && Q != null ? A * P * Q : null };
@@ -458,7 +467,7 @@ $("btnPdf").onclick = async () => {
     tabela("Produção por operador (proporcional às horas)", ["Operador","Horas apontadas","Lotes","Peças","Peças/hora","Valor","Peças perdidas","Custo perdas"],
       resumo.porOperador.map(o => [o.nome, h1(o.horas), o.lotes, q(o.pecas), o.horas ? q(o.pecas / o.horas) : "–", brl(o.valor), q(o.perdidas), brl(o.custoPerda)]), [1,2,3,4,5,6,7]);
   nota("Peças, valor e perdas de cada lote são divididos entre turnos, máquinas e operadores na proporção das horas trabalhadas. Sábado, domingo, feriado e 06h30–07h = Fora de turno. " +
-       "OEE = Disponibilidade × Performance × Qualidade. Disponibilidade = horas rodando em turno ÷ horas planejadas (turnos seg–sex, exceto feriados, até agora). " +
+       "OEE = Disponibilidade × Performance × Qualidade. Disponibilidade = horas rodando em turno ÷ horas planejadas (turnos seg–sex, exceto feriados, até agora, sem refeições Tarde 18–19h e Noite 02–03h; máx. 100%). " +
        "Performance = peças produzidas × tempo padrão ÷ tempo real (máx. 100%). Qualidade = aprovadas ÷ (aprovadas + reprovadas na inspeção + refugo do operador).");
 
   if(resumo.porMotivo.length){
