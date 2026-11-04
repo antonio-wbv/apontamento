@@ -116,7 +116,7 @@ async function atualizar(){
 
   if(minha){
     $("abertaTexto").innerHTML =
-      `OP <b>${texto(minha.op)}</b> · Peça <b>${texto(minha.peca)}</b><br>Lote: ${minha.quantidade} peças<br>Operador: ${texto(minha.operador)}<br>Desde ${hora(minha.inicio)} · há ${minutos(minha.inicio)} min`;
+      `OP <b>${texto(minha.op)}</b> · Peça <b>${texto(minha.peca)}</b><br>${minha.descricao ? texto(minha.descricao) + "<br>" : ""}Lote: ${minha.quantidade} peças<br>Operador: ${texto(minha.operador)}<br>Desde ${hora(minha.inicio)} · há ${minutos(minha.inicio)} min`;
     qtdLote = minha.quantidade;
     $("qtdProduzida").value = minha.quantidade;          // já vem com a quantidade da OP
     $("motivoDiv").value = ""; $("outrosTexto").value = "";
@@ -154,6 +154,7 @@ async function carregarOps(){
   const item = (o, pos) => `
     <label class="op-item"><input type="radio" name="op" value="${o.id}" ${o.id === marcada ? "checked" : ""}>
       <b>${pos}º · OP ${texto(o.op)}</b> · ${texto(o.peca)} · ${o.quantidade} pç
+      ${o.descricao ? `<br><small style="color:#475467">${texto(o.descricao)}</small>` : ""}
       ${o === sugerida ? `<br><span class="tag t-Em">★ Sugerida pelo PCP</span>` : ""}
       ${o.maquina_preferida ? ` <span class="tag t-Aguardando">${texto(o.maquina_preferida)}</span>` : ""}
       ${o.situacao === "Interrompida" ? ` <span class="tag t-Interrompida">⏸ retomar (${Math.round(o.minutos_total)} min feitos)</span>` : ""}

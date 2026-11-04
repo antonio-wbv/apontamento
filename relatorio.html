@@ -32,27 +32,45 @@ window.onerror = function(m){
     <div><button class="btn-vermelho" id="btnPdf" style="margin:0">Exportar PDF</button></div>
     <div><button class="btn-verde" id="btnCsv" style="margin:0">Exportar CSV</button></div>
   </div>
-  <div style="font-size:13px;color:#475467;margin:-6px 0 12px">A produção entra no dia, turno e máquina em que o lote foi <b>encerrado</b>.</div>
+  <div style="font-size:13px;color:#475467;margin:-6px 0 12px">A produção entra no dia, turno e máquina em que o lote foi <b>encerrado</b>. Hora-máquina: R$ <span id="hm"></span>.</div>
 
   <div class="kpis">
-    <div class="kpi">Lotes encerrados<b id="kLotes">0</b></div>
+    <div class="kpi">OEE<b id="kOee">–</b></div>
     <div class="kpi">Peças liberadas<b id="kPecas">0</b></div>
-    <div class="kpi">Valor total<b id="kValor">R$ 0,00</b></div>
+    <div class="kpi">Valor produzido<b id="kValor">R$ 0,00</b></div>
+    <div class="kpi">Peças perdidas<b id="kPerdidas">0</b></div>
+    <div class="kpi">Custo das perdas<b id="kCustoPerdas" style="color:#b42318">R$ 0,00</b></div>
+    <div class="kpi">Lotes encerrados<b id="kLotes">0</b></div>
     <div class="kpi">Tempo médio por peça<b id="kTempo">–</b></div>
     <div class="kpi">Interrupções<b id="kInt">0</b></div>
-    <div class="kpi">Lotes com divergência<b id="kDiv">0</b></div>
   </div>
 
-  <div class="card" style="margin-top:14px"><h2>Peças liberadas por máquina</h2><div class="rolagem"><table id="tMaq"></table></div></div>
-  <div class="card">
-    <h2>Execução por turno</h2>
-    <div style="font-size:13px;color:#475467;margin-bottom:8px">
-      <b>% das peças</b> = participação do turno no total liberado. <b>% execução</b> = horas com OP em andamento ÷ horas disponíveis do turno
-      (duração do turno × máquinas × dias em que o turno trabalhou).</div>
-    <div class="rolagem"><table id="tTurno"></table></div>
+  <!-- OEE -->
+  <div class="card" style="margin-top:14px">
+    <h2>OEE – Eficiência Global do Equipamento</h2>
+    <div class="kpis" id="oeeFatores"></div>
+    <div style="font-size:12px;color:#475467;margin-top:10px;line-height:1.6">
+      <b>OEE = Disponibilidade × Performance × Qualidade.</b>
+      <b>Disponibilidade</b> = horas com OP rodando ÷ horas planejadas (turnos de segunda a sexta, até agora; sábado não conta).
+      <b>Performance</b> = (peças boas + refugo) × tempo padrão ÷ tempo real dos lotes (máx. 100%).
+      <b>Qualidade</b> = peças boas ÷ (boas + refugo). Refugo = peças faltantes com motivo "Falha na usinagem".</div>
   </div>
+
+  <div class="card"><h2>Por máquina</h2><div class="rolagem"><table id="tMaq"></table></div></div>
+  <div class="card"><h2>Por turno</h2><div class="rolagem"><table id="tTurno"></table></div></div>
+
+  <!-- PERDAS -->
+  <div class="card">
+    <h2>Custo das peças perdidas</h2>
+    <div style="font-size:12px;color:#475467;margin-bottom:8px">
+      Custo por peça = tempo padrão da peça × R$ <span class="hm"></span>/h. <b>Refugo</b> (falha na usinagem): tempo de máquina gasto e perdido.
+      <b>Não produzida</b> (material faltando, outros): produção que deixou de acontecer.</div>
+    <div class="rolagem"><table id="tPerdaMotivo"></table></div>
+    <h2 style="margin-top:16px">Lotes com perda</h2>
+    <div class="rolagem"><table id="tDiv"></table></div>
+  </div>
+
   <div class="card"><h2>Por peça</h2><div class="rolagem"><table id="tPeca"></table></div></div>
-  <div class="card"><h2>Lotes encerrados com divergência</h2><div class="rolagem"><table id="tDiv"></table></div></div>
   <div class="card"><h2>Lotes encerrados</h2><div class="rolagem"><table id="tLotes"></table></div></div>
   <div class="card"><h2>Interrupções no período</h2><div class="rolagem"><table id="tInt"></table></div></div>
   <div class="card">
@@ -64,16 +82,19 @@ window.onerror = function(m){
 </main>
 
 <script>
-// Turnos e duração em horas (Noite atravessa a meia-noite)
-const TURNOS = [
-  { nome:"Manhã", ini:[7,0],   fim:[12,0],  horas:5   },
-  { nome:"Tarde", ini:[12,0],  fim:[22,0],  horas:10  },
-  { nome:"Noite", ini:[22,0],  fim:[30,30], horas:8.5 }   // 30:30 = 06:30 do dia seguinte
+const HORA_MAQUINA = CONFIG.HORA_MAQUINA ?? 110;            // R$/h (config.js)
+const custoMin = min => Number(min || 0) / 60 * HORA_MAQUINA;  // minutos -> R$
+const DIAS_DE_TRABALHO = [1,2,3,4,5];                        // segunda a sexta
+const TURNOS = [                                             // minutos desde 00:00 do dia do turno
+  { nome:"Manhã", ini:7*60,  fim:12*60 },
+  { nome:"Tarde", ini:12*60, fim:22*60 },
+  { nome:"Noite", ini:22*60, fim:30*60 + 30 }                // até 06:30 do dia seguinte
 ];
-let lotes = [], interrupcoes = [], sessoes = [], maquinas = [], resumo = {};
+let lotes = [], interrupcoes = [], sessoes = [], maquinas = [], tempoPeca = {}, resumo = {};
 
 async function abrirRelatorio(){
-  const hoje = new Date(), iso = d => d.toLocaleDateString("sv-SE");   // AAAA-MM-DD
+  document.querySelectorAll("#hm,.hm").forEach(e => e.textContent = HORA_MAQUINA.toLocaleString("pt-BR"));
+  const hoje = new Date(), iso = d => d.toLocaleDateString("sv-SE");
   $("dIni").value = iso(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
   $("dFim").value = iso(hoje);
   const { data: maqs } = await db.from("maquinas").select("codigo,nome").eq("ativa", true).order("codigo");
@@ -95,6 +116,10 @@ const diaAnterior = s => { const [y,m,d] = s.split("-").map(Number); return new 
 
 async function filtrar(){
   const turno = $("fTurno").value, maq = $("fMaq").value;
+  // tempo padrão (ou previsto) de cada código de peça
+  const { data: tps } = await db.from("vw_tempo_peca").select("codigo,tempo_usado");
+  tempoPeca = {}; (tps || []).forEach(t => tempoPeca[t.codigo] = t.tempo_usado == null ? null : Number(t.tempo_usado));
+
   lotes = await buscarTudo(() => {
     let q = db.from("vw_ops").select("*").eq("status", "Concluída")
               .gte("data_turno_conclusao", $("dIni").value).lte("data_turno_conclusao", $("dFim").value)
@@ -103,7 +128,6 @@ async function filtrar(){
     if(maq) q = q.eq("ultima_maquina_codigo", maq);
     return q;
   });
-  // Todos os trechos de trabalho do período (para calcular a % de execução)
   sessoes = await buscarTudo(() => {
     let q = db.from("vw_apontamentos").select("inicio,fim,motivo_fim,maquina_codigo,maquina,op,peca,operador,minutos,turno,data_turno")
               .gte("data_turno", diaAnterior($("dIni").value)).lte("data_turno", $("dFim").value)
@@ -117,85 +141,150 @@ async function filtrar(){
 }
 
 // ---------------------------------------------------------------
-// Horas em execução por turno: cada trecho (início→fim) é "recortado"
-// nas janelas de cada turno, dia a dia, e os minutos que caem dentro somam.
+// DISPONIBILIDADE: horas planejadas e horas rodando, por máquina e turno.
+// Planejado = janelas dos turnos de seg a sex dentro do período (até agora).
+// Rodando   = trechos de OP recortados nessas janelas.
 // ---------------------------------------------------------------
-function horasExecucao(){
-  const exec = {}, dias = {};
-  TURNOS.forEach(t => { exec[t.nome] = 0; dias[t.nome] = new Set(); });
+function tempos(){
+  const agora = new Date(), plan = {}, run = {};
+  const maqs = maquinas.filter(m => !$("fMaq").value || m.codigo === $("fMaq").value).map(m => m.codigo);
+  const turnos = TURNOS.filter(t => $("fTurno").value === "Todos" || t.nome === $("fTurno").value);
+  maqs.forEach(m => { plan[m] = {}; run[m] = {}; turnos.forEach(t => { plan[m][t.nome] = 0; run[m][t.nome] = 0; }); });
+
   const [y1,m1,d1] = $("dIni").value.split("-").map(Number), [y2,m2,d2] = $("dFim").value.split("-").map(Number);
-  const limIni = new Date(y1, m1-1, d1), limFim = new Date(y2, m2-1, d2);
-  for(const s of sessoes){
-    const ini = new Date(s.inicio), fim = s.fim ? new Date(s.fim) : new Date();
-    // percorre do dia anterior ao início até o dia do fim
-    for(let d = new Date(ini.getFullYear(), ini.getMonth(), ini.getDate() - 1); d <= fim; d.setDate(d.getDate() + 1)){
-      if(d < limIni || d > limFim) continue;
-      for(const t of TURNOS){
-        const jIni = new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.ini[0], t.ini[1]);
-        const jFim = new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.fim[0], t.fim[1]);
-        const sobreposicao = Math.min(fim, jFim) - Math.max(ini, jIni);          // milissegundos
-        if(sobreposicao > 0){ exec[t.nome] += sobreposicao / 3600000; dias[t.nome].add(d.toDateString()); }
+  for(let d = new Date(y1, m1-1, d1); d <= new Date(y2, m2-1, d2); d.setDate(d.getDate() + 1)){
+    if(!DIAS_DE_TRABALHO.includes(d.getDay())) continue;
+    for(const t of turnos){
+      const jIni = new Date(d.getTime() + t.ini * 60000);
+      const jFim = new Date(Math.min(d.getTime() + t.fim * 60000, agora));    // não conta o futuro
+      if(jFim <= jIni) continue;
+      for(const m of maqs){
+        plan[m][t.nome] += (jFim - jIni) / 3600000;
+        for(const s of sessoes.filter(x => x.maquina_codigo === m)){
+          const sobre = Math.min(s.fim ? new Date(s.fim) : agora, jFim) - Math.max(new Date(s.inicio), jIni);
+          if(sobre > 0) run[m][t.nome] += sobre / 3600000;
+        }
       }
     }
   }
-  return { exec, dias };
+  return { plan, run, maqs, turnos };
+}
+
+// ---------------------------------------------------------------
+// PERFORMANCE, QUALIDADE e PERDAS a partir dos lotes encerrados
+// ---------------------------------------------------------------
+const ehRefugo = l => (l.motivo_divergencia || "").startsWith("Falha na usinagem");
+function analisarLote(l){
+  const tp = tempoPeca[l.peca];                                  // min/peça (padrão ou previsto)
+  const faltaram = Math.max(0, l.quantidade - l.quantidade_produzida);
+  const refugo = l.motivo_divergencia && ehRefugo(l) ? faltaram : 0;
+  return {
+    boas: l.quantidade_produzida, refugo, faltaram, tp,
+    ideal: tp != null ? (l.quantidade_produzida + refugo) * tp : null,   // minutos ideais
+    real: Number(l.minutos_total),
+    custoPerda: tp != null ? faltaram * custoMin(tp) : 0
+  };
+}
+function somar(lista){
+  const r = { lotes:0, pecas:0, valor:0, min:0, boas:0, refugo:0, perdidas:0, custoPerda:0, ideal:0, realComTempo:0 };
+  for(const l of lista){
+    const a = analisarLote(l);
+    r.lotes++; r.pecas += l.quantidade_produzida; r.valor += Number(l.valor); r.min += a.real;
+    r.boas += a.boas; r.refugo += a.refugo; r.perdidas += a.faltaram; r.custoPerda += a.custoPerda;
+    if(a.ideal != null){ r.ideal += a.ideal; r.realComTempo += a.real; }
+  }
+  return r;
+}
+function oee(r, horasRun, horasPlan){
+  const A = horasPlan > 0 ? horasRun / horasPlan : null;
+  const P = r.realComTempo > 0 ? Math.min(1, r.ideal / r.realComTempo) : null;
+  const Q = (r.boas + r.refugo) > 0 ? r.boas / (r.boas + r.refugo) : null;
+  return { A, P, Q, OEE: A != null && P != null && Q != null ? A * P * Q : null };
 }
 
 function calcular(){
-  const turno = $("fTurno").value;
-  const soma = lista => lista.reduce((a,l) => ({ lotes:a.lotes+1, pecas:a.pecas+l.quantidade_produzida, valor:a.valor+Number(l.valor),
-                                                  min:a.min+Number(l.minutos_total), div:a.div+(l.motivo_divergencia ? 1 : 0) }),
-                                        { lotes:0, pecas:0, valor:0, min:0, div:0 });
-  const total = soma(lotes);
-  const nMaq = $("fMaq").value ? 1 : maquinas.length;
-  const { exec, dias } = horasExecucao();
+  const { plan, run, maqs, turnos } = tempos();
+  const soma = (obj, filtro) => Object.entries(obj).reduce((a, [m, porT]) =>
+    a + Object.entries(porT).reduce((b, [t, h]) => b + (filtro(m, t) ? h : 0), 0), 0);
 
-  const porMaquina = maquinas.filter(m => !$("fMaq").value || m.codigo === $("fMaq").value)
-    .map(m => ({ nome:m.nome, ...soma(lotes.filter(l => l.ultima_maquina_codigo === m.codigo)) }));
+  const total = somar(lotes);
+  const geral = oee(total, soma(run, () => true), soma(plan, () => true));
 
-  const porTurno = TURNOS.filter(t => turno === "Todos" || t.nome === turno).map(t => {
-    const s = soma(lotes.filter(l => l.turno_conclusao === t.nome));
-    const disp = t.horas * nMaq * dias[t.nome].size;
-    return { nome:t.nome, ...s, pctPecas: total.pecas ? s.pecas / total.pecas : 0,
-             hExec: exec[t.nome], hDisp: disp, pctExec: disp ? exec[t.nome] / disp : 0 };
+  const porMaquina = maqs.map(m => {
+    const r = somar(lotes.filter(l => l.ultima_maquina_codigo === m));
+    const hr = soma(run, x => x === m), hp = soma(plan, x => x === m);
+    return { nome: maquinas.find(x => x.codigo === m).nome, ...r, hRun:hr, hPlan:hp, ...oee(r, hr, hp) };
+  });
+  const porTurno = turnos.map(t => {
+    const r = somar(lotes.filter(l => l.turno_conclusao === t.nome));
+    const hr = soma(run, (m, x) => x === t.nome), hp = soma(plan, (m, x) => x === t.nome);
+    return { nome:t.nome, ...r, hRun:hr, hPlan:hp, pctPecas: total.pecas ? r.pecas / total.pecas : 0, ...oee(r, hr, hp) };
+  });
+
+  const comPerda = lotes.filter(l => l.motivo_divergencia && l.quantidade > l.quantidade_produzida);
+  const porMotivo = {};
+  comPerda.forEach(l => {
+    const a = analisarLote(l), motivo = l.motivo_divergencia.startsWith("Outros") ? "Outros" : l.motivo_divergencia;
+    porMotivo[motivo] ??= { motivo, tipo: ehRefugo(l) ? "Refugo" : "Não produzida", pecas:0, custo:0, lotes:0 };
+    porMotivo[motivo].pecas += a.faltaram; porMotivo[motivo].custo += a.custoPerda; porMotivo[motivo].lotes++;
   });
 
   const porPeca = {};
   lotes.forEach(l => { porPeca[l.peca] ??= []; porPeca[l.peca].push(l); });
-  resumo = { total, porMaquina, porTurno,
-             porPeca: Object.entries(porPeca).map(([p, ls]) => ({ peca:p, ...soma(ls) })).sort((a,b) => b.valor - a.valor || b.pecas - a.pecas),
-             divergencias: lotes.filter(l => l.motivo_divergencia) };
+  resumo = { total, geral, porMaquina, porTurno, comPerda,
+             porMotivo: Object.values(porMotivo).sort((a, b) => b.custo - a.custo),
+             porPeca: Object.entries(porPeca).map(([p, ls]) => ({ peca:p, ...somar(ls) })).sort((a, b) => b.valor - a.valor || b.pecas - a.pecas) };
 }
 
-const pct = v => (v * 100).toLocaleString("pt-BR", { maximumFractionDigits:1 }) + "%";
+// ---------------------------------------------------------------
+// TELA
+// ---------------------------------------------------------------
+const pct = v => v == null ? "–" : (v * 100).toLocaleString("pt-BR", { maximumFractionDigits:1 }) + "%";
 const h1 = v => v.toLocaleString("pt-BR", { maximumFractionDigits:1 }) + " h";
 const porPecaTempo = o => o.pecas ? (o.min / o.pecas).toFixed(1) + " min" : "–";
-const barra = v => `<div class="barra"><span style="width:${Math.min(100, v*100)}%"></span></div>`;
+const barra = v => v == null ? "" : `<div class="barra"><span style="width:${Math.min(100, v*100)}%"></span></div>`;
+const minPeca = v => v == null ? "–" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits:2 }) + " min";
 
 function desenhar(){
-  const t = resumo.total;
+  const t = resumo.total, g = resumo.geral;
+  $("kOee").textContent = pct(g.OEE);
   $("kLotes").textContent = t.lotes;
   $("kPecas").textContent = t.pecas.toLocaleString("pt-BR");
   $("kValor").textContent = brl(t.valor);
+  $("kPerdidas").textContent = t.perdidas.toLocaleString("pt-BR");
+  $("kCustoPerdas").textContent = brl(t.custoPerda);
   $("kTempo").textContent = porPecaTempo(t);
   $("kInt").textContent = interrupcoes.length;
-  $("kDiv").textContent = t.div;
 
-  $("tMaq").innerHTML = `<tr><th>Máquina</th><th class="n">Lotes</th><th class="n">Peças liberadas</th><th class="n">% das peças</th><th class="n">Valor</th><th class="n">Lotes c/ divergência</th></tr>` +
-    resumo.porMaquina.map(m => `<tr><td>${texto(m.nome)}</td><td class="n">${m.lotes}</td><td class="n"><b>${m.pecas}</b></td>
-      <td class="n">${pct(t.pecas ? m.pecas / t.pecas : 0)}</td><td class="n">${brl(m.valor)}</td><td class="n">${m.div}</td></tr>`).join("");
+  $("oeeFatores").innerHTML = [["OEE", g.OEE], ["Disponibilidade", g.A], ["Performance", g.P], ["Qualidade", g.Q]]
+    .map(([n, v]) => `<div class="kpi">${n}<b>${pct(v)}</b>${barra(v)}</div>`).join("");
 
-  $("tTurno").innerHTML = `<tr><th>Turno</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">% das peças</th><th class="n">Horas em execução</th><th class="n">Horas disponíveis</th><th class="n">% execução</th><th></th></tr>` +
+  const cabOee = `<th class="n">Horas rodando</th><th class="n">Horas planejadas</th><th class="n">Disp.</th><th class="n">Perf.</th><th class="n">Qual.</th><th class="n">OEE</th><th></th>`;
+  const celOee = r => `<td class="n">${h1(r.hRun)}</td><td class="n">${h1(r.hPlan)}</td><td class="n">${pct(r.A)}</td><td class="n">${pct(r.P)}</td>
+                       <td class="n">${pct(r.Q)}</td><td class="n"><b>${pct(r.OEE)}</b></td><td>${barra(r.OEE)}</td>`;
+
+  $("tMaq").innerHTML = `<tr><th>Máquina</th><th class="n">Lotes</th><th class="n">Peças liberadas</th><th class="n">Peças perdidas</th><th class="n">Custo perdas</th><th class="n">Valor</th>${cabOee}</tr>` +
+    resumo.porMaquina.map(m => `<tr><td>${texto(m.nome)}</td><td class="n">${m.lotes}</td><td class="n"><b>${m.pecas}</b></td><td class="n">${m.perdidas}</td>
+      <td class="n">${brl(m.custoPerda)}</td><td class="n">${brl(m.valor)}</td>${celOee(m)}</tr>`).join("");
+
+  $("tTurno").innerHTML = `<tr><th>Turno</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">% das peças</th><th class="n">Peças perdidas</th><th class="n">Custo perdas</th>${cabOee}</tr>` +
     resumo.porTurno.map(r => `<tr><td>${r.nome}</td><td class="n">${r.lotes}</td><td class="n">${r.pecas}</td><td class="n">${pct(r.pctPecas)}</td>
-      <td class="n">${h1(r.hExec)}</td><td class="n">${h1(r.hDisp)}</td><td class="n"><b>${pct(r.pctExec)}</b></td><td>${barra(r.pctExec)}</td></tr>`).join("");
+      <td class="n">${r.perdidas}</td><td class="n">${brl(r.custoPerda)}</td>${celOee(r)}</tr>`).join("");
 
-  $("tPeca").innerHTML = `<tr><th>Peça</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">Valor</th><th class="n">Tempo total</th><th class="n">Tempo/peça</th></tr>` +
-    resumo.porPeca.map(o => `<tr><td>${texto(o.peca)}</td><td class="n">${o.lotes}</td><td class="n">${o.pecas}</td><td class="n">${brl(o.valor)}</td><td class="n">${horas(o.min)}</td><td class="n">${porPecaTempo(o)}</td></tr>`).join("");
+  $("tPerdaMotivo").innerHTML = `<tr><th>Motivo</th><th>Tipo</th><th class="n">Lotes</th><th class="n">Peças perdidas</th><th class="n">Custo perdido</th></tr>` +
+    (resumo.porMotivo.map(m => `<tr><td>${texto(m.motivo)}</td><td>${m.tipo}</td><td class="n">${m.lotes}</td><td class="n">${m.pecas}</td><td class="n"><b>${brl(m.custo)}</b></td></tr>`).join("") +
+     (resumo.porMotivo.length ? `<tr><td colspan="3"><b>Total</b></td><td class="n"><b>${t.perdidas}</b></td><td class="n"><b>${brl(t.custoPerda)}</b></td></tr>`
+                              : `<tr><td colspan="5"><i>Nenhuma perda no período.</i></td></tr>`));
 
-  $("tDiv").innerHTML = `<tr><th>Encerrado</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Liberadas</th><th class="n">Faltaram</th><th>Motivo</th></tr>` +
-    (resumo.divergencias.map(l => `<tr><td>${dataHora(l.concluida_em)}</td><td>${texto(l.ultima_maquina)}</td><td>${texto(l.op)}</td><td>${texto(l.peca)}</td>
-      <td class="n">${l.quantidade}</td><td class="n">${l.quantidade_produzida}</td><td class="n"><b>${l.quantidade - l.quantidade_produzida}</b></td><td>${texto(l.motivo_divergencia)}</td></tr>`).join("")
-     || `<tr><td colspan="8"><i>Nenhuma divergência no período.</i></td></tr>`);
+  $("tDiv").innerHTML = `<tr><th>Encerrado</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Liberadas</th><th class="n">Perdidas</th><th class="n">Tempo/peça</th><th class="n">Custo/peça</th><th class="n">Custo perdido</th><th>Motivo</th></tr>` +
+    (resumo.comPerda.map(l => { const a = analisarLote(l); return `<tr><td>${dataHora(l.concluida_em)}</td><td>${texto(l.ultima_maquina)}</td><td>${texto(l.op)}</td><td>${texto(l.peca)}</td>
+      <td class="n">${l.quantidade}</td><td class="n">${l.quantidade_produzida}</td><td class="n"><b>${a.faltaram}</b></td>
+      <td class="n">${minPeca(a.tp)}</td><td class="n">${a.tp != null ? brl(custoMin(a.tp)) : "sem tempo"}</td><td class="n"><b>${brl(a.custoPerda)}</b></td>
+      <td>${texto(l.motivo_divergencia)}</td></tr>`; }).join("") || `<tr><td colspan="11"><i>Nenhum lote com perda.</i></td></tr>`);
+
+  $("tPeca").innerHTML = `<tr><th>Peça</th><th class="n">Lotes</th><th class="n">Peças</th><th class="n">Perdidas</th><th class="n">Valor</th><th class="n">Tempo total</th><th class="n">Tempo/peça real</th><th class="n">Custo usinagem/peça</th></tr>` +
+    resumo.porPeca.map(o => `<tr><td>${texto(o.peca)}</td><td class="n">${o.lotes}</td><td class="n">${o.pecas}</td><td class="n">${o.perdidas}</td><td class="n">${brl(o.valor)}</td>
+      <td class="n">${horas(o.min)}</td><td class="n">${porPecaTempo(o)}</td><td class="n">${o.pecas ? brl(custoMin(o.min / o.pecas)) : "–"}</td></tr>`).join("");
 
   $("tLotes").innerHTML = `<tr><th>Encerrado</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Liberadas</th><th class="n">Preço</th><th class="n">Valor</th><th class="n">Tempo</th><th class="n">Interrup.</th></tr>` +
     lotes.slice(0,500).map(l => `<tr><td>${dataHora(l.concluida_em)}</td><td>${l.turno_conclusao}</td><td>${texto(l.ultima_maquina)}</td><td>${texto(l.op)}</td><td>${texto(l.peca)}</td>
@@ -218,69 +307,66 @@ async function logoBase64(){
 
 $("btnPdf").onclick = async () => {
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:"mm", format:"a4" });
-  const azul = [31,56,100], dourado = [196,173,130];
+  const doc = new jsPDF({ unit:"mm", format:"a4", orientation:"landscape" });
+  const azul = [31,56,100], dourado = [196,173,130], W = 297;
   const br = s => s.split("-").reverse().join("/");
-  const t = resumo.total;
+  const t = resumo.total, g = resumo.geral;
 
-  // Cabeçalho: logo + título + filtros
   const logo = await logoBase64();
-  if(logo) doc.addImage(logo, "PNG", 14, 10, 46, 16);
+  if(logo) doc.addImage(logo, "PNG", 14, 9, 46, 16);
   doc.setFont("helvetica","bold"); doc.setFontSize(15); doc.setTextColor(...azul);
-  doc.text("Relatório de Produção – Usinagem", 196, 16, { align:"right" });
+  doc.text("Relatório de Produção – Usinagem", W - 14, 15, { align:"right" });
   doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(80);
   const maqTxt = $("fMaq").value ? $("fMaq").selectedOptions[0].text : "Todas";
-  doc.text(`Período: ${br($("dIni").value)} a ${br($("dFim").value)}  ·  Turno: ${$("fTurno").value}  ·  Máquina: ${maqTxt}`, 196, 22, { align:"right" });
-  doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, 196, 27, { align:"right" });
-  doc.setDrawColor(...dourado); doc.setLineWidth(0.8); doc.line(14, 31, 196, 31);
+  doc.text(`Período: ${br($("dIni").value)} a ${br($("dFim").value)}  ·  Turno: ${$("fTurno").value}  ·  Máquina: ${maqTxt}  ·  Hora-máquina: ${brl(HORA_MAQUINA)}`, W - 14, 21, { align:"right" });
+  doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, W - 14, 26, { align:"right" });
+  doc.setDrawColor(...dourado); doc.setLineWidth(0.8); doc.line(14, 30, W - 14, 30);
 
-  // Indicadores
-  doc.autoTable({ startY:35, theme:"plain", styles:{ halign:"center", fontSize:9, textColor:80 },
-    head:[["Lotes encerrados","Peças liberadas","Valor total","Tempo médio/peça","Interrupções","Lotes c/ divergência"]],
-    body:[[t.lotes, t.pecas.toLocaleString("pt-BR"), brl(t.valor), porPecaTempo(t), interrupcoes.length, t.div]],
+  doc.autoTable({ startY:33, theme:"plain", styles:{ halign:"center", fontSize:9, textColor:80 },
+    head:[["OEE","Disponibilidade","Performance","Qualidade","Peças liberadas","Peças perdidas","Custo das perdas","Valor produzido","Lotes"]],
+    body:[[pct(g.OEE), pct(g.A), pct(g.P), pct(g.Q), t.pecas.toLocaleString("pt-BR"), t.perdidas, brl(t.custoPerda), brl(t.valor), t.lotes]],
     bodyStyles:{ fontStyle:"bold", fontSize:12, textColor:azul } });
 
-  let espacoExtra = 0;     // espaço para notas de rodapé de uma tabela
+  let espacoExtra = 0;
   const tabela = (titulo, head, body, numCols) => {
     let y = doc.lastAutoTable.finalY + 9 + espacoExtra; espacoExtra = 0;
-    if(y > 260){ doc.addPage(); y = 20; }
+    if(y > 180){ doc.addPage(); y = 18; }
     doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(...azul); doc.text(titulo, 14, y);
     const colunas = {}; numCols.forEach(i => colunas[i] = { halign:"right" });
-    doc.autoTable({ startY:y + 2, head:[head], body, theme:"grid", styles:{ fontSize:8.5 },
+    doc.autoTable({ startY:y + 2, head:[head], body, theme:"grid", styles:{ fontSize:8.5 }, margin:{ bottom:15 },
       headStyles:{ fillColor:azul }, alternateRowStyles:{ fillColor:[245,247,250] }, columnStyles:colunas });
   };
+  const nota = txt => { doc.setFont("helvetica","normal"); doc.setFontSize(7.5); doc.setTextColor(110);
+                        doc.text(txt, 14, doc.lastAutoTable.finalY + 4, { maxWidth: W - 28 }); espacoExtra = 6; };
 
-  tabela("Peças liberadas por máquina",
-    ["Máquina","Lotes","Peças liberadas","% das peças","Valor","Lotes c/ divergência"],
-    resumo.porMaquina.map(m => [m.nome, m.lotes, m.pecas, pct(t.pecas ? m.pecas / t.pecas : 0), brl(m.valor), m.div])
-      .concat([["Total", t.lotes, t.pecas, pct(t.pecas ? 1 : 0), brl(t.valor), t.div]]), [1,2,3,4,5]);
+  const colOee = r => [h1(r.hRun), h1(r.hPlan), pct(r.A), pct(r.P), pct(r.Q), pct(r.OEE)];
+  tabela("Peças liberadas e OEE por máquina",
+    ["Máquina","Lotes","Peças liberadas","Peças perdidas","Custo perdas","Valor","Horas rodando","Horas planejadas","Disp.","Perf.","Qual.","OEE"],
+    resumo.porMaquina.map(m => [m.nome, m.lotes, m.pecas, m.perdidas, brl(m.custoPerda), brl(m.valor), ...colOee(m)]), [1,2,3,4,5,6,7,8,9,10,11]);
+  tabela("Execução e OEE por turno",
+    ["Turno","Lotes","Peças","% das peças","Peças perdidas","Custo perdas","Horas rodando","Horas planejadas","Disp.","Perf.","Qual.","OEE"],
+    resumo.porTurno.map(r => [r.nome, r.lotes, r.pecas, pct(r.pctPecas), r.perdidas, brl(r.custoPerda), ...colOee(r)]), [1,2,3,4,5,6,7,8,9,10,11]);
+  nota("OEE = Disponibilidade × Performance × Qualidade. Disponibilidade = horas rodando ÷ horas planejadas (turnos seg–sex até agora). " +
+       "Performance = peças produzidas × tempo padrão ÷ tempo real (máx. 100%). Qualidade = boas ÷ (boas + refugo por falha na usinagem).");
 
-  tabela("Execução por turno",
-    ["Turno","Lotes","Peças","% das peças","Horas em execução","Horas disponíveis","% execução"],
-    resumo.porTurno.map(r => [r.nome, r.lotes, r.pecas, pct(r.pctPecas), h1(r.hExec), h1(r.hDisp), pct(r.pctExec)]), [1,2,3,4,5,6]);
-  doc.setFont("helvetica","normal"); doc.setFontSize(7.5); doc.setTextColor(110);
-  doc.text("% execução = horas com OP em andamento ÷ (duração do turno × máquinas × dias em que o turno trabalhou). Turnos: Manhã 07–12h, Tarde 12–22h, Noite 22–06h30.",
-           14, doc.lastAutoTable.finalY + 4, { maxWidth:182 });
-  espacoExtra = 6;
+  if(resumo.porMotivo.length){
+    tabela("Custo das peças perdidas por motivo", ["Motivo","Tipo","Lotes","Peças perdidas","Custo perdido"],
+      resumo.porMotivo.map(m => [m.motivo, m.tipo, m.lotes, m.pecas, brl(m.custo)]).concat([["Total","","",t.perdidas,brl(t.custoPerda)]]), [2,3,4]);
+    nota(`Custo por peça perdida = tempo padrão da peça × ${brl(HORA_MAQUINA)}/h.`);
+    tabela("Lotes com perda", ["Encerrado","Máquina","OP","Peça","Qtd OP","Liberadas","Perdidas","Custo/peça","Custo perdido","Motivo"],
+      resumo.comPerda.map(l => { const a = analisarLote(l); return [dataHora(l.concluida_em), l.ultima_maquina, l.op, l.peca, l.quantidade, l.quantidade_produzida,
+        a.faltaram, a.tp != null ? brl(custoMin(a.tp)) : "sem tempo", brl(a.custoPerda), l.motivo_divergencia]; }), [4,5,6,7,8]);
+  }
+  tabela("Por peça", ["Peça","Lotes","Peças","Perdidas","Valor","Tempo total","Tempo/peça real","Custo usinagem/peça"],
+    resumo.porPeca.map(o => [o.peca, o.lotes, o.pecas, o.perdidas, brl(o.valor), horas(o.min), porPecaTempo(o), o.pecas ? brl(custoMin(o.min / o.pecas)) : "–"]), [1,2,3,4,5,6,7]);
 
-  if(resumo.divergencias.length)
-    tabela("Lotes encerrados com divergência",
-      ["Encerrado","Máquina","OP","Peça","Qtd OP","Liberadas","Faltaram","Motivo"],
-      resumo.divergencias.map(l => [dataHora(l.concluida_em), l.ultima_maquina, l.op, l.peca, l.quantidade, l.quantidade_produzida,
-                                    l.quantidade - l.quantidade_produzida, l.motivo_divergencia]), [4,5,6]);
-
-  tabela("Por peça", ["Peça","Lotes","Peças","Valor","Tempo total","Tempo/peça"],
-    resumo.porPeca.map(o => [o.peca, o.lotes, o.pecas, brl(o.valor), horas(o.min), porPecaTempo(o)]), [1,2,3,4,5]);
-
-  // Rodapé com número da página
   const n = doc.getNumberOfPages();
   for(let i = 1; i <= n; i++){
     doc.setPage(i); doc.setFontSize(8); doc.setTextColor(140);
-    doc.text(`Applic Technology · Página ${i} de ${n}`, 105, 290, { align:"center" });
+    doc.text(`Applic Technology · Página ${i} de ${n}`, W / 2, 203, { align:"center" });
   }
   doc.save(`relatorio_producao_${$("dIni").value}_a_${$("dFim").value}.pdf`);
 };
-
 // ---------- PREÇOS ----------
 async function carregarPrecos(){
   const { data, error } = await db.from("catalogo").select("id,codigo,preco");
@@ -300,10 +386,10 @@ async function salvarPreco(id){
 
 // ---------- CSV ----------
 $("btnCsv").onclick = () => {
-  const cab = ["Encerrado","Turno","Data turno","Máquina","OP","Peça","Qtd OP","Liberadas","Motivo divergência","Preço","Valor","Minutos","Interrupções"];
+  const cab = ["Encerrado","Turno","Data turno","Máquina","OP","Peça","Qtd OP","Liberadas","Perdidas","Motivo divergência","Custo perdido","Preço","Valor","Minutos","Interrupções"];
   const num = v => v == null ? "" : String(v).replace(".", ",");
   const linhas = lotes.map(l => [new Date(l.concluida_em).toLocaleString("pt-BR"), l.turno_conclusao, l.data_turno_conclusao, l.ultima_maquina, l.op, l.peca,
-    l.quantidade, l.quantidade_produzida, l.motivo_divergencia ?? "", num(l.preco), num(l.valor), num(l.minutos_total), l.interrupcoes].join(";"));
+    l.quantidade, l.quantidade_produzida, l.quantidade - l.quantidade_produzida, l.motivo_divergencia ?? "", num(analisarLote(l).custoPerda.toFixed(2)), num(l.preco), num(l.valor), num(l.minutos_total), l.interrupcoes].join(";"));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + [cab.join(";")].concat(linhas).join("\n")], { type:"text/csv" }));
   a.download = `lotes_${$("dIni").value}_a_${$("dFim").value}.csv`;

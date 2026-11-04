@@ -65,7 +65,9 @@ window.onerror = function(m){
       <div><button class="btn-verde" id="btnLancar" style="margin:0">+ Lançar OP</button></div>
     </div>
     <datalist id="listaPecas"></datalist>
+    <div id="descricaoErp" style="font-size:15px;margin-top:10px;font-weight:700"></div>
     <div id="dicaTempo" style="font-size:13px;margin-top:8px;font-weight:600;color:var(--azul)"></div>
+    <div id="statusErp" style="font-size:12px;color:#667085;margin-top:6px"></div>
     <div style="font-size:13px;color:#475467;margin-top:8px">A OP entra no fim da fila. Código novo é cadastrado no catálogo automaticamente (sem preço).</div>
     <div id="msg"></div>
   </div>
@@ -116,7 +118,7 @@ window.onerror = function(m){
 
 <script>
 let fila = [], historico = [], maquinas = [], arrastando = null;
-const HORA_MAQUINA = 110;                      // R$ por hora de máquina (ajuste aqui quando mudar)
+const HORA_MAQUINA = CONFIG.HORA_MAQUINA ?? 110;   // R$ por hora de máquina (definido no config.js)
 const custo = minutos => Number(minutos || 0) / 60 * HORA_MAQUINA;
 const btnPeq = 'style="margin:0;padding:4px 10px;font-size:13px;width:auto"';
 
@@ -126,6 +128,7 @@ async function abrirPcp(){
   $("maquinaNova").innerHTML = opcoesMaquina("");
   await carregarCatalogo();
   await carregarTempos();
+  statusErp();
   await carregarTudo();
   setInterval(() => { if(!arrastando) carregarFila(); }, 30000);   // atualiza a cada 30 s
 }
@@ -157,7 +160,7 @@ function desenharFila(){
   $("tFila").innerHTML = `<tr><th></th><th class="n">#</th><th>OP</th><th>Peça</th><th class="n">Qtd</th><th>Situação</th><th>Máquina</th><th class="n">Tempo/peça</th><th class="n">Restante</th><th class="n">Custo usinagem do lote</th><th>Ordem</th><th></th></tr>` +
     fila.map((o, i) => `<tr draggable="true" data-i="${i}" style="cursor:grab">
       <td style="color:#98a2b3">⠿</td><td class="n"><b>${i + 1}</b></td>
-      <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td><td class="n">${o.quantidade}</td>
+      <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}${o.descricao ? `<br><small style="color:#475467">${texto(o.descricao)}</small>` : ""}</td><td class="n">${o.quantidade}</td>
       <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span>${o.situacao === "Em execução" ? " " + texto(o.ultima_maquina) : ""}</td>
       <td><select onchange="mudarMaquina(${o.id}, this.value)" style="padding:6px;font-size:14px">${opcoesMaquina(o.maquina_preferida_codigo)}</select></td>
       <td class="n">${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min" : "–"}<br>${tagFonte(o.tempo_fonte)}</td>
@@ -232,6 +235,37 @@ async function salvarTempo(id){
   if(error){ alert(error.message); return; }
   await carregarTempos(); carregarFila();
 }
+// ---------------------------------------------------------------
+// DESCRIÇÃO DO NOMUS: 1º procura na cópia (erp_produtos); se não achar,
+// a função "nomus-produto" pergunta ao Nomus na hora e guarda na cópia.
+// ---------------------------------------------------------------
+let timerErp = null, ultimaBusca = "";
+async function buscarDescricao(){
+  const cod = $("codigo").value.trim();
+  if(!cod){ $("descricaoErp").textContent = ""; return; }
+  if(cod.toLowerCase() === ultimaBusca) return;
+  ultimaBusca = cod.toLowerCase();
+  const { data } = await db.from("erp_produtos").select("codigo,descricao").eq("codigo_busca", cod.toLowerCase()).maybeSingle();
+  if(data){ mostrarDescricao(data.descricao, "#05603a", "✔"); return; }
+  $("descricaoErp").style.color = "#475467"; $("descricaoErp").textContent = "Buscando no Nomus...";
+  const { data: r, error } = await db.functions.invoke("nomus-produto", { body: { codigo: cod } });
+  if(cod.toLowerCase() !== ultimaBusca) return;                          // usuário já digitou outra coisa
+  if(error || r?.erro) mostrarDescricao(`Não foi possível consultar o Nomus (${texto(error?.message || r.erro)})`, "#b54708", "⚠");
+  else if(r.encontrado) mostrarDescricao(r.descricao, "#05603a", "✔");
+  else mostrarDescricao("Código não encontrado no Nomus. Confira o código.", "#b42318", "✖");
+}
+function mostrarDescricao(t, cor, icone){ $("descricaoErp").style.color = cor; $("descricaoErp").textContent = `${icone} ${t ?? "(sem descrição)"}`; }
+$("codigo").addEventListener("input", () => { clearTimeout(timerErp); timerErp = setTimeout(buscarDescricao, 700); });
+$("codigo").addEventListener("change", buscarDescricao);
+
+async function statusErp(){
+  const { data: st } = await db.from("erp_sync").select("concluido_em,itens_ciclo,ultimo_erro,atualizado_em").eq("id", 1).maybeSingle();
+  const { count } = await db.from("erp_produtos").select("codigo", { count:"exact", head:true });
+  $("statusErp").textContent = `Base Nomus: ${(count ?? 0).toLocaleString("pt-BR")} itens` +
+    (st?.concluido_em ? ` · última cópia completa ${dataHora(st.concluido_em)}` : " · cópia diária ainda não concluída") +
+    (st?.ultimo_erro ? ` · último erro: ${st.ultimo_erro}` : "");
+}
+
 // Ao digitar o código, mostra qual tempo o sistema vai usar
 $("codigo").oninput = () => {
   const t = tempos.find(x => x.codigo.toLowerCase() === $("codigo").value.trim().toLowerCase());
@@ -314,7 +348,7 @@ function desenharPrevisao(){
         <tr><th class="n">#</th><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Tempo/peça</th><th class="n">Duração restante</th><th>Início previsto</th><th>Fim previsto</th></tr>
         ${ls.map((o, i) => `<tr><td class="n">${i + 1}</td>
           <td><b>${texto(o.op)}</b> ${o.rodando ? '<span class="tag t-Em">rodando</span>' : ""}${o.automatica && !o.rodando ? ' <span class="tag t-Aguardando">auto</span>' : ""}</td>
-          <td>${texto(o.peca)}</td><td class="n">${o.quantidade}</td>
+          <td>${texto(o.peca)}${o.descricao ? `<br><small style="color:#475467">${texto(o.descricao)}</small>` : ""}</td><td class="n">${o.quantidade}</td>
           <td class="n">${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min" : "–"} ${tagFonte(o.tempo_fonte)}</td>
           <td class="n">${o.semTempo ? "?" : horas(o.minutos_restantes)}</td>
           <td>${o.rodando ? "em andamento" : dataCurta(o.inicio)}</td><td><b>${o.semTempo ? "?" : dataCurta(o.fim)}</b></td></tr>`).join("")
@@ -422,6 +456,7 @@ function desenharGantt(agora, livreEm, linhas){
 function mostrarDica(e, k){
   const o = window._ganttItens[k], t = $("tooltip");
   t.innerHTML = `<b>OP ${texto(o.op)}</b> · ${texto(o.peca)} · ${o.quantidade} pç<br>
+    ${o.descricao ? texto(o.descricao) + "<br>" : ""}
     ${o.rodando ? "Rodando agora" : "Início: " + dataCurta(o.inicio)}<br>
     Fim previsto: <b>${o.semTempo ? "sem tempo" : dataCurta(o.fim)}</b><br>
     Restante: ${o.semTempo ? "?" : horas(o.minutos_restantes)} · ${o.semTempo ? "" : brl(custo(o.minutos_restantes))}<br>
@@ -465,7 +500,7 @@ $("btnLancar").onclick = async () => {
   $("btnLancar").disabled = false;
   if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
   $("msg").innerHTML = `<div class="msg ok">OP ${texto(numero)} lançada no fim da fila.</div>`;
-  $("numero").value = ""; $("quantidade").value = ""; $("tempoPrevisto").value = ""; $("dicaTempo").textContent = ""; $("numero").focus();
+  $("numero").value = ""; $("quantidade").value = ""; $("tempoPrevisto").value = ""; $("dicaTempo").textContent = ""; $("descricaoErp").textContent = ""; ultimaBusca = ""; $("numero").focus();
   carregarCatalogo(); carregarTempos(); carregarFila();
 };
 
