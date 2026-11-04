@@ -48,7 +48,7 @@ window.onerror = function(m){
       <h2>Interromper (a OP pode ser retomada depois)</h2>
       <select id="motivo">
         <option>Pausa para outra peça</option><option>Fim de turno</option><option>Manutenção</option>
-        <option>Falta de material</option><option>Outro</option>
+        <option>Falta de material</option><option>Setup</option><option>Outro</option>
       </select>
       <button id="btnInterromper" class="btn-vermelho">⏸ INTERROMPER</button>
     </div>
@@ -227,10 +227,10 @@ $("btnEncerrar").onclick = () => {
       motivo = "Outros: " + desc;
     }
   }
-  if(!confirm(`Encerrar o lote com ${qtd} de ${qtdLote} peças? A OP será concluída.`)) return;
+  if(!confirm(`Encerrar o lote com ${qtd} de ${qtdLote} peças? O lote vai para a inspeção da qualidade.`)) return;
   executar($("btnEncerrar"),
     () => db.rpc("encerrar_lote", { p_maquina: maquina, p_quantidade: qtd, p_motivo: motivo }),
-    `✔ Lote encerrado com ${qtd} peças.`);
+    `✔ Lote encerrado com ${qtd} peças e enviado para a inspeção da qualidade.`);
 };
 
 $("btnInterromper").onclick = () => {

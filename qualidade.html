@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Qualidade – Inspeção de Lotes</title>
+<link rel="stylesheet" href="estilo.css">
+<script>
+// Mostra qualquer erro de JavaScript na tela (ajuda a achar problemas no config.js)
+window.onerror = function(m){
+  function mostrar(){ var d = document.getElementById("erroGlobal") || document.body.insertAdjacentElement("afterbegin", Object.assign(document.createElement("div"), {id:"erroGlobal"}));
+    d.textContent = "Erro na página: " + m + " (confira o config.js)"; }
+  if(document.body) mostrar(); else document.addEventListener("DOMContentLoaded", mostrar);
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="login.js"></script>
+</head>
+<body>
+<header class="com-logo"><img src="logo.png" alt="Applic Technology"><div><h1>Qualidade – Inspeção de Lotes</h1><small id="usuario"></small></div></header>
+<main>
+<div id="painel" class="oculto">
+  <div class="kpis">
+    <div class="kpi">Aguardando inspeção<b id="kFila">0</b></div>
+    <div class="kpi">Peças aguardando<b id="kPecasFila">0</b></div>
+    <div class="kpi">Lotes liberados hoje<b id="kHoje">0</b></div>
+    <div class="kpi">Aprovação no mês<b id="kAprov">–</b></div>
+    <div class="kpi">Peças reprovadas no mês<b id="kReprov" style="color:#b42318">0</b></div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2>Lotes aguardando inspeção</h2>
+    <div style="font-size:13px;color:#475467">Do mais antigo para o mais novo. Conte as peças, informe aprovadas e reprovadas e clique em <b>Liberar lote</b>.
+      Só depois disso o lote entra no relatório de produção.</div>
+    <div id="msg"></div>
+    <div id="fila"></div>
+  </div>
+
+  <div class="card">
+    <h2>Inspecionados recentemente</h2>
+    <div class="rolagem"><table id="tHist"></table></div>
+  </div>
+</div>
+</main>
+
+<script>
+const MOTIVOS = ["Dimensional", "Acabamento superficial", "Rebarba", "Material com defeito", "Dano no manuseio", "Outros"];
+let aguardando = [];
+
+async function abrirQualidade(){
+  await carregar();
+  setInterval(carregar, 60000);           // atualiza a cada 1 min
+}
+
+async function carregar(){
+  // 1) Lotes que o operador encerrou e aguardam inspeção (mais antigo primeiro)
+  const { data, error } = await db.from("vw_ops").select("*").eq("status", "Em inspeção").order("fim_producao_em");
+  if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
+  aguardando = data;
+  // quem trabalhou em cada lote
+  const nums = data.map(o => o.op);
+  const { data: ap } = nums.length ? await db.from("vw_apontamentos").select("op,operador,maquina").in("op", nums) : { data: [] };
+  const quem = {};
+  (ap || []).forEach(a => { quem[a.op] ??= new Set(); quem[a.op].add(`${a.operador} (${a.maquina})`); });
+  desenharFila(quem);
+  carregarHistorico();
+}
+
+function desenharFila(quem){
+  $("kFila").textContent = aguardando.length;
+  $("kPecasFila").textContent = aguardando.reduce((a, o) => a + (o.quantidade_produzida || 0), 0).toLocaleString("pt-BR");
+  if(!aguardando.length){ $("fila").innerHTML = `<p style="margin-top:12px"><i>Nenhum lote aguardando inspeção.</i></p>`; return; }
+
+  $("fila").innerHTML = aguardando.map(o => `
+    <div class="lote-insp">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div><b style="font-size:17px">OP ${texto(o.op)}</b> · ${texto(o.peca)}${o.descricao ? ` – ${texto(o.descricao)}` : ""}</div>
+        <span class="tag t-Inspecao">Encerrado ${dataHora(o.fim_producao_em)}</span>
+      </div>
+      <div style="font-size:14px;margin-top:6px;color:#344054">
+        Quantidade da OP: <b>${o.quantidade}</b> · Declarada pelo operador: <b>${o.quantidade_produzida}</b>
+        ${o.motivo_divergencia ? ` · <span class="tag t-Interrompida">⚠ ${texto(o.motivo_divergencia)}</span>` : ""}
+        <br>Produzido por: ${[...(quem[o.op] || [])].map(texto).join(", ") || "–"}
+      </div>
+      <div class="filtros">
+        <div><label>Aprovadas</label><input id="ap${o.id}" type="number" min="0" inputmode="numeric" value="${o.quantidade_produzida}" oninput="conferir(${o.id})"></div>
+        <div><label>Reprovadas</label><input id="rp${o.id}" type="number" min="0" inputmode="numeric" value="0" oninput="conferir(${o.id})"></div>
+        <div><label>Motivo da reprovação</label><select id="mt${o.id}"><option value="">–</option>${MOTIVOS.map(m => `<option>${m}</option>`).join("")}</select></div>
+        <div style="grid-column:span 2"><label>Observação</label><input id="ob${o.id}" placeholder="opcional"></div>
+        <div><button class="btn-verde" style="margin:0" onclick="liberar(${o.id})">✔ Liberar lote</button></div>
+      </div>
+      <div id="cf${o.id}" style="font-size:13px;margin-top:6px"></div>
+    </div>`).join("");
+  aguardando.forEach(o => conferir(o.id));
+}
+
+// Compara a contagem da inspeção com a declarada pelo operador
+function conferir(id){
+  const o = aguardando.find(x => x.id === id);
+  const ap = Number($("ap" + id).value || 0), rp = Number($("rp" + id).value || 0), total = ap + rp;
+  const dif = total - o.quantidade_produzida;
+  $("cf" + id).innerHTML = `Total inspecionado: <b>${total}</b>` +
+    (dif === 0 ? ` <span style="color:#05603a">✔ confere com o operador</span>`
+               : ` <span style="color:#b54708">⚠ ${dif > 0 ? "+" : ""}${dif} em relação ao declarado pelo operador (${o.quantidade_produzida})</span>`);
+}
+
+async function liberar(id){
+  const o = aguardando.find(x => x.id === id);
+  const ap = Number($("ap" + id).value), rp = Number($("rp" + id).value), motivo = $("mt" + id).value, obs = $("ob" + id).value.trim();
+  if($("ap" + id).value === "" || $("rp" + id).value === "" || ap < 0 || rp < 0){ alert("Informe aprovadas e reprovadas."); return; }
+  if(rp > 0 && !motivo){ alert("Selecione o motivo da reprovação."); return; }
+  if(motivo === "Outros" && !obs){ alert("Descreva o motivo em Observação."); return; }
+  const dif = ap + rp - o.quantidade_produzida;
+  if(!confirm(`Liberar OP ${o.op}?\n\nAprovadas: ${ap}\nReprovadas: ${rp}` +
+              (dif ? `\n\nAtenção: o total (${ap + rp}) é diferente do declarado pelo operador (${o.quantidade_produzida}).` : ""))) return;
+  const { error } = await db.rpc("liberar_lote", { p_op: id, p_aprovadas: ap, p_reprovadas: rp,
+                                                   p_motivo: rp > 0 ? motivo : null, p_obs: obs || null });
+  $("msg").innerHTML = error ? `<div class="msg erro">${texto(error.message)}</div>`
+                             : `<div class="msg ok">OP ${texto(o.op)} liberada: ${ap} aprovadas, ${rp} reprovadas. Já está no relatório.</div>`;
+  carregar();
+}
+
+async function carregarHistorico(){
+  const agora = new Date(), inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1), hoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
+  const { data } = await db.from("vw_ops").select("*").eq("status", "Concluída").not("inspecionado_em", "is", null)
+                           .gte("inspecionado_em", inicioMes.toISOString()).order("inspecionado_em", { ascending:false }).limit(1000);
+  const lista = data || [];
+  const ap = lista.reduce((a, o) => a + (o.quantidade_aprovada || 0), 0), rp = lista.reduce((a, o) => a + (o.quantidade_reprovada || 0), 0);
+  $("kHoje").textContent = lista.filter(o => new Date(o.inspecionado_em) >= hoje).length;
+  $("kAprov").textContent = ap + rp ? (ap / (ap + rp) * 100).toLocaleString("pt-BR", { maximumFractionDigits:1 }) + "%" : "–";
+  $("kReprov").textContent = rp.toLocaleString("pt-BR");
+  $("tHist").innerHTML = `<tr><th>Liberado</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Declarada</th><th class="n">Aprovadas</th><th class="n">Reprovadas</th><th>Motivo</th><th>Observação</th><th>Inspetor</th></tr>` +
+    (lista.slice(0, 50).map(o => `<tr><td>${dataHora(o.inspecionado_em)}</td><td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td>
+      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_produzida}</td><td class="n"><b>${o.quantidade_aprovada}</b></td>
+      <td class="n" style="color:${o.quantidade_reprovada ? "#b42318" : "inherit"}">${o.quantidade_reprovada}</td>
+      <td>${texto(o.motivo_reprovacao ?? "")}</td><td>${texto(o.obs_inspecao ?? "")}</td><td>${texto(o.inspetor ?? "")}</td></tr>`).join("")
+     || `<tr><td colspan="10"><i>Nenhum lote inspecionado neste mês.</i></td></tr>`);
+}
+
+protegerPagina(abrirQualidade);
+</script>
+</body>
+</html>

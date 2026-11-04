@@ -24,7 +24,7 @@ window.onerror = function(m){
   <!-- ===================== DASHBOARD ===================== -->
   <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:10px">
     <h2 style="margin:0;font-size:20px;color:var(--azul)">Cronograma de usinagem</h2>
-    <small style="color:#475467">Seg a sex · turnos 07h–06h30 · hora-máquina R$ <span id="hm"></span> · atualizado <span id="atualizado"></span></small>
+    <small style="color:#475467">Seg a sex, exceto feriados · turnos 07h–06h30 · hora-máquina R$ <span id="hm"></span> · atualizado <span id="atualizado"></span></small>
   </div>
   <div class="kpis" id="kpisDash"></div>
 
@@ -84,6 +84,11 @@ window.onerror = function(m){
     <div style="font-size:13px;color:#475467;margin-bottom:8px">
       Arraste as linhas (ou use ▲ ▼) para definir a ordem. Em <b>Máquina</b>, "Qualquer" deixa a OP na fila das duas CNCs.
       O operador vê a lista inteira e pode escolher outra OP, se precisar.</div>
+    <div class="filtros" style="margin-bottom:10px">
+      <div><label>Mostrar máquina</label><select id="fMaqFila"></select></div>
+      <div><button class="btn-azul" id="btnBalancear" style="margin:0">⚖ Balancear fila entre as máquinas</button></div>
+    </div>
+    <div id="msgFila"></div>
     <div class="rolagem"><table id="tFila"></table></div>
   </div>
 
@@ -108,7 +113,7 @@ window.onerror = function(m){
   <div class="card">
     <h2>Histórico</h2>
     <div class="filtros" style="margin-bottom:10px">
-      <div><label>Mostrar</label><select id="fStatus"><option value="Concluída">Concluídas</option><option value="Cancelada">Canceladas</option></select></div>
+      <div><label>Mostrar</label><select id="fStatus"><option value="Em inspeção">Em inspeção</option><option value="Concluída">Concluídas</option><option value="Cancelada">Canceladas</option></select></div>
       <div><label>Buscar</label><input id="fBusca" placeholder="OP ou peça"></div>
     </div>
     <div class="rolagem"><table id="tHist"></table></div>
@@ -117,7 +122,7 @@ window.onerror = function(m){
 </main>
 
 <script>
-let fila = [], historico = [], maquinas = [], arrastando = null;
+let fila = [], historico = [], maquinas = [], arrastando = null, feriados = new Set();
 const HORA_MAQUINA = CONFIG.HORA_MAQUINA ?? 110;   // R$ por hora de máquina (definido no config.js)
 const custo = minutos => Number(minutos || 0) / 60 * HORA_MAQUINA;
 const btnPeq = 'style="margin:0;padding:4px 10px;font-size:13px;width:auto"';
@@ -125,7 +130,12 @@ const btnPeq = 'style="margin:0;padding:4px 10px;font-size:13px;width:auto"';
 async function abrirPcp(){
   const { data: maqs } = await db.from("maquinas").select("codigo,nome").eq("ativa", true).order("codigo");
   maquinas = maqs || [];
+  const { data: fer } = await db.from("feriados").select("data");
+  feriados = new Set((fer || []).map(f => f.data));
   $("maquinaNova").innerHTML = opcoesMaquina("");
+  $("fMaqFila").innerHTML = `<option value="*">Todas</option>` +
+    maquinas.map(m => `<option value="${texto(m.codigo)}">${texto(m.nome)}</option>`).join("") + `<option value="">Qualquer (sem máquina)</option>`;
+  $("fMaqFila").onchange = desenharFila;
   await carregarCatalogo();
   await carregarTempos();
   statusErp();
@@ -156,28 +166,38 @@ const tagFonte = f => f === "Padrão" ? '<span class="tag t-Concluída">Padrão<
                     : f === "Previsto PCP" ? '<span class="tag t-Aguardando">Previsto</span>'
                     : '<span class="tag t-Cancelada">Sem tempo</span>';
 
+// Uma OP aparece no filtro da máquina se estiver marcada para ela ou rodando nela
+function visivelNoFiltro(o){
+  const f = $("fMaqFila").value;
+  if(f === "*") return true;
+  if(f === "") return !o.maquina_preferida_codigo && o.situacao !== "Em execução";
+  return o.maquina_preferida_codigo === f || (o.situacao === "Em execução" && o.ultima_maquina_codigo === f);
+}
+
 function desenharFila(){
+  // guardamos a posição GLOBAL (g) de cada OP, para a ordem continuar valendo para a fila inteira
+  const visiveis = fila.map((o, g) => ({ o, g })).filter(x => visivelNoFiltro(x.o));
   $("tFila").innerHTML = `<tr><th></th><th class="n">#</th><th>OP</th><th>Peça</th><th class="n">Qtd</th><th>Situação</th><th>Máquina</th><th class="n">Tempo/peça</th><th class="n">Restante</th><th class="n">Custo usinagem do lote</th><th>Ordem</th><th></th></tr>` +
-    fila.map((o, i) => `<tr draggable="true" data-i="${i}" style="cursor:grab">
-      <td style="color:#98a2b3">⠿</td><td class="n"><b>${i + 1}</b></td>
+    visiveis.map(({ o, g }, v) => `<tr draggable="true" data-g="${g}" style="cursor:grab">
+      <td style="color:#98a2b3">⠿</td><td class="n"><b>${g + 1}</b></td>
       <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}${o.descricao ? `<br><small style="color:#475467">${texto(o.descricao)}</small>` : ""}</td><td class="n">${o.quantidade}</td>
       <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span>${o.situacao === "Em execução" ? " " + texto(o.ultima_maquina) : ""}</td>
       <td><select onchange="mudarMaquina(${o.id}, this.value)" style="padding:6px;font-size:14px">${opcoesMaquina(o.maquina_preferida_codigo)}</select></td>
       <td class="n">${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min" : "–"}<br>${tagFonte(o.tempo_fonte)}</td>
       <td class="n">${o.tempo_peca != null ? horas(o.minutos_restantes) : "–"}</td>
       <td class="n">${o.tempo_peca != null ? brl(custo(o.tempo_peca * o.quantidade)) : "–"}</td>
-      <td><button class="btn-azul" ${btnPeq} onclick="mover(${i},-1)" ${i === 0 ? "disabled" : ""}>▲</button>
-          <button class="btn-azul" ${btnPeq} onclick="mover(${i},1)" ${i === fila.length - 1 ? "disabled" : ""}>▼</button></td>
+      <td><button class="btn-azul" ${btnPeq} onclick="reposicionar(${g}, ${v > 0 ? visiveis[v - 1].g : -1})" ${v === 0 ? "disabled" : ""}>▲</button>
+          <button class="btn-azul" ${btnPeq} onclick="reposicionar(${g}, ${v < visiveis.length - 1 ? visiveis[v + 1].g : -1})" ${v === visiveis.length - 1 ? "disabled" : ""}>▼</button></td>
       <td>${o.situacao !== "Em execução" ? `<button class="btn-vermelho" ${btnPeq} onclick="cancelar(${o.id})">Cancelar</button>` : ""}</td>
     </tr>`).join("") +
-    (fila.length ? "" : `<tr><td colspan="12"><i>Nenhuma OP aberta.</i></td></tr>`);
+    (visiveis.length ? "" : `<tr><td colspan="12"><i>Nenhuma OP aberta${$("fMaqFila").value !== "*" ? " para este filtro" : ""}.</i></td></tr>`);
 
   // Arrastar e soltar (computador)
   document.querySelectorAll("#tFila tr[draggable]").forEach(tr => {
-    tr.ondragstart = () => { arrastando = Number(tr.dataset.i); tr.style.opacity = .4; };
+    tr.ondragstart = () => { arrastando = Number(tr.dataset.g); tr.style.opacity = .4; };
     tr.ondragend   = () => { arrastando = null; tr.style.opacity = 1; };
     tr.ondragover  = e => e.preventDefault();
-    tr.ondrop      = e => { e.preventDefault(); reposicionar(arrastando, Number(tr.dataset.i)); };
+    tr.ondrop      = e => { e.preventDefault(); reposicionar(arrastando, Number(tr.dataset.g)); };
   });
 }
 
@@ -194,8 +214,7 @@ function desenharPrevia(){
   }).join("");
 }
 
-// Troca de posição e grava no banco
-function mover(i, passo){ reposicionar(i, i + passo); }
+// Troca de posição (de/para = posições na fila inteira) e grava no banco
 async function reposicionar(de, para){
   if(de === null || para < 0 || para >= fila.length || de === para) return;
   const [item] = fila.splice(de, 1);      // tira da posição antiga...
@@ -204,6 +223,35 @@ async function reposicionar(de, para){
   const { error } = await db.rpc("definir_ordem", { p_ids: fila.map(o => o.id) });
   if(error){ alert(error.message); carregarFila(); }
 }
+
+// ---------------------------------------------------------------
+// BALANCEAR: distribui as OPs (que não estão rodando) entre as máquinas,
+// seguindo a ordem da fila: cada OP vai para a máquina que fica livre primeiro.
+// ---------------------------------------------------------------
+$("btnBalancear").onclick = async () => {
+  const agora = new Date(), livre = {}, novo = {};
+  maquinas.forEach(m => livre[m.codigo] = agora);
+  fila.filter(o => o.situacao === "Em execução" && livre[o.ultima_maquina_codigo])
+      .forEach(o => livre[o.ultima_maquina_codigo] = avancar(agora, Number(o.minutos_restantes)).fim);
+  const mudar = [];
+  for(const o of fila.filter(x => x.situacao !== "Em execução")){
+    const m = maquinas.map(x => x.codigo).sort((a, b) => livre[a] - livre[b])[0];
+    livre[m] = avancar(livre[m], Number(o.minutos_restantes)).fim;
+    novo[m] = (novo[m] || 0) + 1;
+    if(o.maquina_preferida_codigo !== m) mudar.push({ o, m });
+  }
+  const resumo = maquinas.map(m => `${m.nome}: ${novo[m.codigo] || 0} OPs, livre em ${dataCurta(livre[m.codigo])}`).join("\n");
+  if(!mudar.length){ $("msgFila").innerHTML = `<div class="msg ok">A fila já está balanceada.</div>`; return; }
+  if(!confirm(`Balancear a fila? ${mudar.length} OP(s) mudam de máquina.\n\nResultado previsto:\n${resumo}\n\nOPs rodando não são alteradas. A ordem da fila continua a mesma.`)) return;
+
+  $("btnBalancear").disabled = true;
+  const res = await Promise.all(mudar.map(({ o, m }) => db.rpc("definir_maquina", { p_op: o.id, p_maquina: m })));
+  $("btnBalancear").disabled = false;
+  const erro = res.find(r => r.error);
+  $("msgFila").innerHTML = erro ? `<div class="msg erro">${texto(erro.error.message)}</div>`
+                                : `<div class="msg ok">Fila balanceada: ${mudar.length} OP(s) redistribuída(s).</div>`;
+  carregarFila();
+};
 
 async function mudarMaquina(id, codigo){
   const { error } = await db.rpc("definir_maquina", { p_op: id, p_maquina: codigo });
@@ -288,7 +336,7 @@ const DIAS_DE_TRABALHO = [1,2,3,4,5];          // 0 = domingo ... 6 = sábado
 function* intervalosDeTrabalho(desde){
   const d = new Date(desde.getFullYear(), desde.getMonth(), desde.getDate() - 1);   // começa no dia anterior (noite)
   for(let i = 0; i < 400; i++, d.setDate(d.getDate() + 1)){
-    if(!DIAS_DE_TRABALHO.includes(d.getDay())) continue;
+    if(!DIAS_DE_TRABALHO.includes(d.getDay()) || feriados.has(d.toLocaleDateString("sv-SE"))) continue;   // fim de semana ou feriado
     for(const [a, b] of JANELAS){
       const ini = new Date(d.getTime() + a * 60000), fim = new Date(d.getTime() + b * 60000);
       if(fim > desde) yield [ini < desde ? new Date(desde) : ini, fim];
@@ -383,9 +431,17 @@ function desenharDashboard(agora, livreEm, linhas){
     }).join("") +
     `<div class="kpi">OPs abertas<b>${todas.length}</b></div>` +
     `<div class="kpi">Custo de usinagem da fila<b>${brl(custo(cargaTotal))}</b></div>` +
+    `<div class="kpi">Custo de usinagem – ${nomeMes()}<b id="kMes">…</b><small id="kMesDet" style="color:#475467"></small></div>` +
     `<div class="kpi">OPs sem tempo<b style="color:${semTempo ? "#b42318" : "inherit"}">${semTempo}</b></div>`;
 
   desenharGantt(agora, livreEm, linhas);
+  // custo do mês atual = horas trabalhadas no mês × hora-máquina
+  horasUsinadasMes().then(r => {
+    if(!$("kMes")) return;
+    $("kMes").textContent = brl(r.total * HORA_MAQUINA);
+    $("kMesDet").textContent = horas(r.total * 60) + " de máquina · " +
+      maquinas.map(m => `${m.nome} ${brl((r.porMaquina[m.codigo] || 0) * HORA_MAQUINA)}`).join(" · ");
+  });
 
   // --- Custo por máquina (barras horizontais, uma cor) ---
   const porMaq = maquinas.map(m => ({ nome:m.nome, min: linhas[m.codigo].reduce((a, o) => a + Number(o.minutos_restantes), 0), ops: linhas[m.codigo].length }));
@@ -489,8 +545,8 @@ function desenharHistorico(){
   $("tHist").innerHTML = `<tr><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Liberadas</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th class="n">Interrup.</th><th>Lançada</th><th>Encerrada</th></tr>` +
     lista.map(o => `<tr>
       <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td>
-      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_produzida ?? "–"}${o.motivo_divergencia ? `<br><span class="tag t-Interrompida">⚠ ${texto(o.motivo_divergencia)}</span>` : ""}</td>
-      <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span></td>
+      <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_aprovada ?? o.quantidade_produzida ?? "–"}${o.quantidade_reprovada ? `<br><span class="tag t-Cancelada">${o.quantidade_reprovada} reprovada(s)</span>` : ""}${o.motivo_divergencia ? `<br><span class="tag t-Interrompida">⚠ ${texto(o.motivo_divergencia)}</span>` : ""}</td>
+      <td><span class="tag ${o.situacao === "Em inspeção" ? "t-Inspecao" : "t-" + o.situacao.split(" ")[0]}">${o.situacao}</span></td>
       <td>${texto(o.ultima_maquina ?? "–")}</td><td class="n">${horas(o.minutos_total)}</td><td class="n">${o.interrupcoes}</td>
       <td>${dataHora(o.criada_em)}</td><td>${dataHora(o.concluida_em)}</td></tr>`).join("") +
     (lista.length ? "" : `<tr><td colspan="10"><i>Nenhuma OP.</i></td></tr>`);

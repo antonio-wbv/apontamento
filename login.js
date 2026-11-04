@@ -34,3 +34,25 @@ function protegerPagina(abrir){
   }
   verificar();
 }
+
+// =============================================================
+//  Horas de máquina trabalhadas no MÊS ATUAL (todas as máquinas ou uma)
+//  Soma o tempo de cada trecho de OP a partir do dia 1º, até agora.
+//  Inclui sábados trabalhados (é custo real de máquina).
+// =============================================================
+async function horasUsinadasMes(maquina){
+  const agora = new Date(), inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1);
+  let q = db.from("vw_apontamentos").select("inicio,fim,maquina_codigo")
+            .or(`fim.is.null,fim.gte.${inicioMes.toISOString()}`).limit(10000);
+  if(maquina) q = q.eq("maquina_codigo", maquina);
+  const { data, error } = await q;
+  if(error){ console.error(error); return { total:0, porMaquina:{} }; }
+  const porMaquina = {}; let total = 0;
+  for(const s of data){
+    const ini = Math.max(new Date(s.inicio), inicioMes), fim = s.fim ? new Date(s.fim) : agora;
+    const h = Math.max(0, fim - ini) / 3600000;               // só a parte dentro do mês
+    porMaquina[s.maquina_codigo] = (porMaquina[s.maquina_codigo] || 0) + h; total += h;
+  }
+  return { total, porMaquina };
+}
+const nomeMes = () => new Date().toLocaleDateString("pt-BR", { month:"long", year:"numeric" });
