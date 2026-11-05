@@ -64,6 +64,10 @@ window.onerror = function(m){
       <div><label>Tempo previsto (min/peça)</label><input id="tempoPrevisto" type="number" min="0" step="0.1" inputmode="decimal" placeholder="opcional"></div>
       <div><button class="btn-verde" id="btnLancar" style="margin:0">+ Lançar OP</button></div>
     </div>
+    <div style="margin-top:10px">
+      <label for="descricao">Descrição do item <span style="font-weight:400;color:#475467">(preenchida pelo Nomus/último uso; confira ou ajuste)</span></label>
+      <input id="descricao" placeholder="Ex.: Eixo de transmissão Ø25 mm aço 1045" maxlength="200">
+    </div>
     <datalist id="listaPecas"></datalist>
     <div id="descricaoErp" style="font-size:15px;margin-top:10px;font-weight:700"></div>
     <div id="dicaTempo" style="font-size:13px;margin-top:8px;font-weight:600;color:var(--azul)"></div>
@@ -293,15 +297,23 @@ async function buscarDescricao(){
   if(!cod){ $("descricaoErp").textContent = ""; return; }
   if(cod.toLowerCase() === ultimaBusca) return;
   ultimaBusca = cod.toLowerCase();
+  const { data: cat } = await db.from("catalogo").select("codigo,descricao").ilike("codigo", cod).maybeSingle();
+  if(cat?.descricao){ preencherDescricao(cat.descricao); mostrarDescricao("Descrição da última OP deste código", "#05603a", "✔"); return; }
   const { data } = await db.from("erp_produtos").select("codigo,descricao").eq("codigo_busca", cod.toLowerCase()).maybeSingle();
-  if(data){ mostrarDescricao(data.descricao, "#05603a", "✔"); return; }
+  if(data){ preencherDescricao(data.descricao); mostrarDescricao("Descrição encontrada no Nomus", "#05603a", "✔"); return; }
   $("descricaoErp").style.color = "#475467"; $("descricaoErp").textContent = "Buscando no Nomus...";
   const { data: r, error } = await db.functions.invoke("nomus-produto", { body: { codigo: cod } });
   if(cod.toLowerCase() !== ultimaBusca) return;                          // usuário já digitou outra coisa
   if(error || r?.erro) mostrarDescricao(`Não foi possível consultar o Nomus (${texto(error?.message || r.erro)})`, "#b54708", "⚠");
-  else if(r.encontrado) mostrarDescricao(r.descricao, "#05603a", "✔");
-  else mostrarDescricao("Código não encontrado no Nomus. Confira o código.", "#b42318", "✖");
+  else if(r.encontrado){ preencherDescricao(r.descricao); mostrarDescricao("Descrição encontrada no Nomus", "#05603a", "✔"); }
+  else mostrarDescricao("Código não encontrado no Nomus. Confira o código e digite a descrição.", "#b42318", "✖");
 }
+// Só preenche se o PCP ainda não digitou nada (ou se o texto anterior também foi automático)
+let descricaoAutomatica = true;
+function preencherDescricao(t){
+  if(t && (descricaoAutomatica || !$("descricao").value.trim())){ $("descricao").value = t; descricaoAutomatica = true; }
+}
+$("descricao").addEventListener("input", () => descricaoAutomatica = false);
 function mostrarDescricao(t, cor, icone){ $("descricaoErp").style.color = cor; $("descricaoErp").textContent = `${icone} ${t ?? "(sem descrição)"}`; }
 $("codigo").addEventListener("input", () => { clearTimeout(timerErp); timerErp = setTimeout(buscarDescricao, 700); });
 $("codigo").addEventListener("change", buscarDescricao);
@@ -544,7 +556,7 @@ function desenharHistorico(){
   const lista = historico.filter(o => !busca || o.op.toLowerCase().includes(busca) || o.peca.toLowerCase().includes(busca));
   $("tHist").innerHTML = `<tr><th>OP</th><th>Peça</th><th class="n">Qtd</th><th class="n">Liberadas</th><th>Situação</th><th>Máquina</th><th class="n">Tempo</th><th class="n">Interrup.</th><th>Lançada</th><th>Encerrada</th></tr>` +
     lista.map(o => `<tr>
-      <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}</td>
+      <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}${o.descricao ? `<br><small style="color:#475467">${texto(o.descricao)}</small>` : ""}</td>
       <td class="n">${o.quantidade}</td><td class="n">${o.quantidade_aprovada ?? o.quantidade_produzida ?? "–"}${o.quantidade_reprovada ? `<br><span class="tag t-Cancelada">${o.quantidade_reprovada} reprovada(s)</span>` : ""}${o.motivo_divergencia ? `<br><span class="tag t-Interrompida">⚠ ${texto(o.motivo_divergencia)}</span>` : ""}</td>
       <td><span class="tag ${o.situacao === "Em inspeção" ? "t-Inspecao" : "t-" + o.situacao.split(" ")[0]}">${o.situacao}</span></td>
       <td>${texto(o.ultima_maquina ?? "–")}</td><td class="n">${horas(o.minutos_total)}</td><td class="n">${o.interrupcoes}</td>
@@ -557,14 +569,16 @@ function desenharHistorico(){
 // ---------------------------------------------------------------
 $("btnLancar").onclick = async () => {
   const numero = $("numero").value.trim(), codigo = $("codigo").value.trim(), qtd = Number($("quantidade").value);
-  if(!numero || !codigo || !(qtd > 0)){ $("msg").innerHTML = `<div class="msg erro">Preencha OP, código e quantidade.</div>`; return; }
+  const descricao = $("descricao").value.trim();
+  if(!numero || !codigo || !(qtd > 0) || !descricao){ $("msg").innerHTML = `<div class="msg erro">Preencha OP, código, quantidade e descrição do item.</div>`; return; }
   $("btnLancar").disabled = true;
   const { error } = await db.rpc("criar_op", { p_numero: numero, p_codigo: codigo, p_quantidade: qtd, p_maquina: $("maquinaNova").value || null,
-                                                p_tempo_previsto: $("tempoPrevisto").value ? Number($("tempoPrevisto").value) : null });
+                                                p_tempo_previsto: $("tempoPrevisto").value ? Number($("tempoPrevisto").value) : null,
+                                                p_descricao: descricao });
   $("btnLancar").disabled = false;
   if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
-  $("msg").innerHTML = `<div class="msg ok">OP ${texto(numero)} lançada no fim da fila.</div>`;
-  $("numero").value = ""; $("quantidade").value = ""; $("tempoPrevisto").value = ""; $("dicaTempo").textContent = ""; $("descricaoErp").textContent = ""; ultimaBusca = ""; $("numero").focus();
+  $("msg").innerHTML = `<div class="msg ok">OP ${texto(numero)} – ${texto(descricao)} lançada no fim da fila.</div>`;
+  $("numero").value = ""; $("quantidade").value = ""; $("tempoPrevisto").value = ""; $("dicaTempo").textContent = ""; $("descricaoErp").textContent = ""; $("descricao").value = ""; descricaoAutomatica = true; ultimaBusca = ""; $("numero").focus();
   carregarCatalogo(); carregarTempos(); carregarFila();
 };
 

@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gestão – Apontamento CNC</title>
+<link rel="stylesheet" href="estilo.css">
+<script>
+// Mostra qualquer erro de JavaScript na tela (ajuda a achar problemas no config.js)
+window.onerror = function(m){
+  function mostrar(){ var d = document.getElementById("erroGlobal") || document.body.insertAdjacentElement("afterbegin", Object.assign(document.createElement("div"), {id:"erroGlobal"}));
+    d.textContent = "Erro na página: " + m + " (confira o config.js)"; }
+  if(document.body) mostrar(); else document.addEventListener("DOMContentLoaded", mostrar);
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="login.js"></script>
+<style>
+.links{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.links a{display:block;padding:14px;border:1px solid var(--borda);border-radius:10px;text-decoration:none;color:var(--azul);background:#fff;font-weight:700}
+.links a small{display:block;font-weight:400;color:#475467;margin-top:4px}
+.links a:hover{border-color:var(--azul);background:#eef2fa}
+dialog{border:0;border-radius:14px;padding:20px;max-width:520px;width:92%}
+dialog::backdrop{background:rgba(16,24,40,.5)}
+.acoes button{margin:0;padding:4px 10px;font-size:13px;width:auto}
+</style>
+</head>
+<body>
+<header class="com-logo"><img src="logo.png" alt="Applic Technology"><div><h1>Gestão – Apontamento CNC</h1><small id="usuario"></small></div></header>
+<main>
+<div id="semAcesso" class="card oculto" style="max-width:460px;margin:30px auto;text-align:center">
+  <h2>Acesso restrito</h2><p>Esta página é exclusiva da gestão.</p>
+  <button class="btn-azul" onclick="db.auth.signOut().then(() => location.reload())">Entrar com outro usuário</button>
+</div>
+
+<div id="painel" class="oculto">
+  <!-- ACESSO RÁPIDO -->
+  <div class="card">
+    <h2>Acesso rápido</h2>
+    <div class="links" id="links"></div>
+  </div>
+
+  <!-- INDICADORES -->
+  <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;margin:6px 0 10px">
+    <h2 style="margin:0;font-size:18px;color:var(--azul)">Indicadores – <span id="mesNome"></span></h2>
+    <small style="color:#475467">atualizado <span id="atualizado"></span> · <a href="relatorio.html">OEE e relatório completo →</a></small>
+  </div>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card" style="margin-top:14px"><h2>Máquinas agora</h2><div class="kpis" id="maquinasAgora"></div></div>
+
+  <!-- APONTAMENTOS -->
+  <div class="card">
+    <h2>Apontamentos</h2>
+    <div class="filtros">
+      <div><label>De</label><input type="date" id="fIni"></div>
+      <div><label>Até</label><input type="date" id="fFim"></div>
+      <div><label>Operador</label><select id="fOper"><option value="">Todos</option></select></div>
+      <div><label>Máquina</label><select id="fMaq"><option value="">Todas</option></select></div>
+      <div><label>OP</label><input id="fOp" placeholder="número da OP"></div>
+      <div><label>Motivo / situação</label><select id="fMotivo"><option value="">Todos</option><option value="__aberto">Em andamento</option></select></div>
+      <div><button class="btn-azul" id="btnFiltrar" style="margin:0">Filtrar</button></div>
+      <div><button class="btn-verde" id="btnCsv" style="margin:0">Exportar CSV</button></div>
+    </div>
+    <div id="resumoAp" style="font-size:13px;color:#475467;margin:10px 0"></div>
+    <div id="msgAp"></div>
+    <div class="rolagem"><table id="tAp"></table></div>
+  </div>
+
+  <!-- CORREÇÃO DE OP -->
+  <div class="card">
+    <h2>Corrigir OP</h2>
+    <div class="filtros"><div><label>Número da OP</label><input id="buscaOp" placeholder="ex.: 1025"></div>
+      <div><button class="btn-azul" id="btnBuscaOp" style="margin:0">Buscar</button></div></div>
+    <div id="formOp"></div>
+  </div>
+
+  <!-- AUDITORIA -->
+  <div class="card"><h2>Histórico de alterações da gestão</h2><div class="rolagem"><table id="tAud"></table></div></div>
+</div>
+</main>
+
+<!-- Janela de edição de apontamento -->
+<dialog id="dlg">
+  <h2 id="dlgTitulo" style="margin-top:0">Editar apontamento</h2>
+  <div id="dlgInfo" style="font-size:14px;color:#475467"></div>
+  <label>Início</label><input type="datetime-local" id="eIni">
+  <label>Fim <small style="font-weight:400">(vazio = em andamento)</small></label><input type="datetime-local" id="eFim">
+  <label>Operador</label><select id="eOper"></select>
+  <label>Máquina</label><select id="eMaq"></select>
+  <label>Motivo do fim</label><input id="eMotivo" list="listaMotivos">
+  <datalist id="listaMotivos"></datalist>
+  <div id="dlgMsg"></div>
+  <div style="display:flex;gap:10px"><button class="btn-verde" id="btnSalvar">Salvar</button><button class="btn-azul" onclick="$('dlg').close()">Cancelar</button></div>
+</dialog>
+
+<script>
+const MOTIVOS = ["Lote encerrado","Pausa para outra peça","Fim de turno","Manutenção","Falta de material","Setup","Outro","Ajuste da gestão","Emergência"];
+let maquinas = [], operadores = [], apontamentos = [], editando = null;
+const paraLocal = ts => { if(!ts) return ""; const d = new Date(ts); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0,16); };
+const deLocal = v => v ? new Date(v).toISOString() : null;
+const msg = (id, t, tipo) => $(id).innerHTML = t ? `<div class="msg ${tipo}">${texto(t)}</div>` : "";
+
+// ---------------------------------------------------------------
+// ENTRADA: só gestores (a lista fica na tabela "gestores" do banco)
+// ---------------------------------------------------------------
+async function abrirGestao(){
+  const { data: ok } = await db.rpc("eh_gestor");
+  if(!ok){ $("painel").classList.add("oculto"); $("semAcesso").classList.remove("oculto"); return; }
+
+  const [{ data: maqs }, { data: ops }] = await Promise.all([
+    db.from("maquinas").select("codigo,nome").order("codigo"),
+    db.from("operadores").select("nome,ativo").order("nome")]);
+  maquinas = maqs || []; operadores = ops || [];
+  maquinas.forEach(m => { $("fMaq").insertAdjacentHTML("beforeend", `<option value="${texto(m.codigo)}">${texto(m.nome)}</option>`); });
+  operadores.forEach(o => $("fOper").insertAdjacentHTML("beforeend", `<option>${texto(o.nome)}</option>`));
+  MOTIVOS.forEach(m => { $("fMotivo").insertAdjacentHTML("beforeend", `<option>${m}</option>`); $("listaMotivos").insertAdjacentHTML("beforeend", `<option value="${m}">`); });
+  $("eOper").innerHTML = operadores.map(o => `<option>${texto(o.nome)}</option>`).join("");
+  $("eMaq").innerHTML = maquinas.map(m => `<option value="${texto(m.codigo)}">${texto(m.nome)}</option>`).join("");
+
+  desenharLinks();
+  const hoje = new Date();
+  $("fIni").value = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 7).toLocaleDateString("sv-SE");
+  $("fFim").value = hoje.toLocaleDateString("sv-SE");
+  carregarIndicadores(); carregarApontamentos(); carregarAuditoria();
+  setInterval(carregarIndicadores, 60000);
+}
+
+// ---------------------------------------------------------------
+// ACESSO RÁPIDO: todas as páginas do sistema
+// ---------------------------------------------------------------
+function desenharLinks(){
+  const base = location.href.replace(/gestao\.html.*$/, "");
+  const links = [
+    ["PCP", "pcp.html", "Dashboard, fila e lançamento de OPs"],
+    ["Qualidade", "qualidade.html", "Inspeção e liberação de lotes"],
+    ["Relatório", "relatorio.html", "OEE, custos, PDF e CSV"],
+    ...maquinas.map(m => [`Operador ${m.nome}`, `index.html?m=${encodeURIComponent(m.codigo)}`, "Tela do celular da máquina"]),
+    ["QR Codes", "qrcodes.html", "Etiquetas para imprimir"],
+    ["Supabase", "https://supabase.com/dashboard/project/cydzpkvsklfviugdpdml", "Banco, usuários, feriados"],
+    ["GitHub", "https://github.com/antonio-wbv/apontamento", "Arquivos do site"],
+    ["Guia de implantação", "https://claude.ai/artifact/NNSwgoPpqdQevSS3xb5oE6", "Passo a passo do sistema"]
+  ];
+  $("links").innerHTML = links.map(([n, u, d]) =>
+    `<a href="${u.startsWith("http") ? u : base + u}" target="_blank" rel="noopener">${texto(n)}<small>${texto(d)}</small></a>`).join("");
+}
+
+// ---------------------------------------------------------------
+// INDICADORES RÁPIDOS (mês atual e agora)
+// ---------------------------------------------------------------
+async function carregarIndicadores(){
+  const agora = new Date(), inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1), hoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
+  $("mesNome").textContent = nomeMes(); $("atualizado").textContent = agora.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
+  const [lib, abertas, insp, abertos, interr, h] = await Promise.all([
+    db.from("vw_ops").select("quantidade_aprovada,quantidade_produzida,quantidade_reprovada,quantidade,valor").eq("status", "Concluída").gte("concluida_em", inicioMes.toISOString()),
+    db.from("vw_ops").select("id", { count:"exact", head:true }).eq("status", "Aberta"),
+    db.from("vw_ops").select("id", { count:"exact", head:true }).eq("status", "Em inspeção"),
+    db.rpc("apontamentos_abertos"),
+    db.from("vw_apontamentos").select("id", { count:"exact", head:true }).neq("motivo_fim", "Lote encerrado").gte("fim", hoje.toISOString()),
+    horasUsinadasMes()
+  ]);
+  const L = lib.data || [];
+  const aprov = L.reduce((a, o) => a + (o.quantidade_aprovada ?? o.quantidade_produzida ?? 0), 0);
+  const reprov = L.reduce((a, o) => a + (o.quantidade_reprovada || 0), 0);
+  const faltou = L.reduce((a, o) => a + Math.max(0, o.quantidade - (o.quantidade_produzida || 0)), 0);
+  const valor = L.reduce((a, o) => a + Number(o.valor || 0), 0);
+  const k = (n, v, cor) => `<div class="kpi">${n}<b${cor ? ` style="color:${cor}"` : ""}>${v}</b></div>`;
+  $("kpis").innerHTML =
+    k("Peças liberadas no mês", aprov.toLocaleString("pt-BR")) + k("Valor produzido no mês", brl(valor)) +
+    k("Custo de usinagem no mês", brl(h.total * HORA)) + k("Lotes liberados no mês", L.length) +
+    k("Peças reprovadas (inspeção)", reprov, reprov ? "#b42318" : "") + k("Peças faltantes (operador)", faltou, faltou ? "#b54708" : "") +
+    k("OPs abertas na fila", abertas.count ?? 0) + k("Aguardando inspeção", insp.count ?? 0) + k("Interrupções hoje", interr.count ?? 0);
+
+  const rod = abertos.data || [];
+  $("maquinasAgora").innerHTML = maquinas.map(m => {
+    const r = rod.find(x => x.maquina_codigo === m.codigo);
+    return `<div class="kpi" style="${r ? "background:#d1fadf;border-color:#12b76a" : "background:#fef0c7;border-color:#f79009"};border-width:2px">
+      <b style="font-size:18px">${texto(m.nome)}</b>
+      ${r ? `🟢 OP ${texto(r.op)} · ${texto(r.peca)}<br>${texto(r.operador)} · desde ${dataHora(r.inicio)}` : "🟡 Ociosa"}</div>`;
+  }).join("");
+}
+const HORA = CONFIG.HORA_MAQUINA ?? 110;
+
+// ---------------------------------------------------------------
+// APONTAMENTOS: filtros + editar/excluir
+// ---------------------------------------------------------------
+async function carregarApontamentos(){
+  const [y, m, d] = $("fFim").value.split("-").map(Number);
+  let q = db.from("vw_apontamentos").select("*")
+            .gte("inicio", new Date($("fIni").value + "T00:00").toISOString())
+            .lt("inicio", new Date(y, m - 1, d + 1).toISOString())
+            .order("inicio", { ascending:false }).limit(2000);
+  if($("fOper").value) q = q.eq("operador", $("fOper").value);
+  if($("fMaq").value)  q = q.eq("maquina_codigo", $("fMaq").value);
+  if($("fOp").value.trim()) q = q.ilike("op", `%${$("fOp").value.trim()}%`);
+  if($("fMotivo").value === "__aberto") q = q.is("fim", null);
+  else if($("fMotivo").value) q = q.eq("motivo_fim", $("fMotivo").value);
+  const { data, error } = await q;
+  if(error){ msg("msgAp", error.message, "erro"); return; }
+  apontamentos = data;
+  const totalMin = data.reduce((a, x) => a + Number(x.minutos), 0);
+  $("resumoAp").textContent = `${data.length} apontamento(s) · ${horas(totalMin)} de máquina · ${brl(totalMin / 60 * HORA)} de usinagem`;
+  $("tAp").innerHTML = `<tr><th class="n">#</th><th>OP</th><th>Peça</th><th>Máquina</th><th>Operador</th><th>Início</th><th>Fim</th><th class="n">Min</th><th>Turno</th><th>Motivo</th><th class="n">Qtd</th><th></th></tr>` +
+    (data.map(a => `<tr><td class="n">${a.id}</td><td><b>${texto(a.op)}</b></td><td>${texto(a.peca)}</td><td>${texto(a.maquina)}</td><td>${texto(a.operador)}</td>
+      <td>${dataHora(a.inicio)}</td><td>${a.fim ? dataHora(a.fim) : '<span class="tag t-Em">em andamento</span>'}</td><td class="n">${Number(a.minutos).toLocaleString("pt-BR")}</td>
+      <td>${texto(a.turno)}</td><td>${texto(a.motivo_fim ?? "")}</td><td class="n">${a.quantidade || ""}</td>
+      <td class="acoes"><button class="btn-azul" onclick="editar(${a.id})">Editar</button> <button class="btn-vermelho" onclick="excluir(${a.id})">Excluir</button></td></tr>`).join("")
+     || `<tr><td colspan="12"><i>Nenhum apontamento com esses filtros.</i></td></tr>`);
+}
+
+function editar(id){
+  editando = apontamentos.find(a => a.id === id);
+  $("dlgTitulo").textContent = `Editar apontamento #${id}`;
+  $("dlgInfo").textContent = `OP ${editando.op} · ${editando.peca}`;
+  $("eIni").value = paraLocal(editando.inicio); $("eFim").value = paraLocal(editando.fim);
+  $("eOper").value = editando.operador; $("eMaq").value = editando.maquina_codigo; $("eMotivo").value = editando.motivo_fim ?? "";
+  msg("dlgMsg", ""); $("dlg").showModal();
+}
+$("btnSalvar").onclick = async () => {
+  const { error } = await db.rpc("gestor_editar_apontamento", { p_id: editando.id, p_inicio: deLocal($("eIni").value), p_fim: deLocal($("eFim").value),
+                                                               p_operador: $("eOper").value, p_maquina: $("eMaq").value, p_motivo: $("eMotivo").value || null });
+  if(error){ msg("dlgMsg", error.message, "erro"); return; }
+  $("dlg").close(); msg("msgAp", `Apontamento #${editando.id} alterado.`, "ok");
+  carregarApontamentos(); carregarAuditoria(); carregarIndicadores();
+};
+async function excluir(id){
+  const a = apontamentos.find(x => x.id === id);
+  if(!confirm(`Excluir o apontamento #${id} (OP ${a.op}, ${a.operador}, ${dataHora(a.inicio)})?\nO tempo dele deixa de contar. Fica registrado no histórico.`)) return;
+  const { error } = await db.rpc("gestor_excluir_apontamento", { p_id: id });
+  msg("msgAp", error ? error.message : `Apontamento #${id} excluído.`, error ? "erro" : "ok");
+  carregarApontamentos(); carregarAuditoria(); carregarIndicadores();
+}
+$("btnFiltrar").onclick = carregarApontamentos;
+$("fOp").onkeydown = e => { if(e.key === "Enter") carregarApontamentos(); };
+
+$("btnCsv").onclick = () => {
+  const cab = ["#","OP","Peça","Máquina","Operador","Início","Fim","Minutos","Turno","Motivo","Quantidade"];
+  const linhas = apontamentos.map(a => [a.id, a.op, a.peca, a.maquina, a.operador, new Date(a.inicio).toLocaleString("pt-BR"),
+    a.fim ? new Date(a.fim).toLocaleString("pt-BR") : "", String(a.minutos).replace(".", ","), a.turno, a.motivo_fim ?? "", a.quantidade].join(";"));
+  const el = document.createElement("a");
+  el.href = URL.createObjectURL(new Blob(["﻿" + [cab.join(";")].concat(linhas).join("\n")], { type:"text/csv" }));
+  el.download = `apontamentos_${$("fIni").value}_a_${$("fFim").value}.csv`; el.click();
+};
+
+// ---------------------------------------------------------------
+// CORRIGIR OP
+// ---------------------------------------------------------------
+let opAtual = null;
+$("btnBuscaOp").onclick = async () => {
+  const n = $("buscaOp").value.trim(); if(!n) return;
+  const { data } = await db.from("vw_ops").select("*").ilike("op", n).maybeSingle();
+  if(!data){ $("formOp").innerHTML = `<div class="msg erro">OP ${texto(n)} não encontrada.</div>`; return; }
+  opAtual = data;
+  const campo = (id, rot, v, tipo = "number") => `<div><label>${rot}</label><input id="${id}" type="${tipo}" value="${v ?? ""}"></div>`;
+  $("formOp").innerHTML = `
+    <div style="margin:10px 0"><b>OP ${texto(data.op)}</b> · ${texto(data.peca)} ${data.descricao ? "– " + texto(data.descricao) : ""} · situação atual: <b>${data.situacao}</b></div>
+    <div class="filtros">
+      ${campo("cQtd", "Quantidade da OP", data.quantidade)}
+      ${campo("cProd", "Declarada pelo operador", data.quantidade_produzida)}
+      ${campo("cAprov", "Aprovadas (inspeção)", data.quantidade_aprovada)}
+      ${campo("cReprov", "Reprovadas (inspeção)", data.quantidade_reprovada)}
+      ${campo("cMotDiv", "Motivo divergência (operador)", data.motivo_divergencia, "text")}
+      ${campo("cMotRep", "Motivo reprovação", data.motivo_reprovacao, "text")}
+      <div><label>Situação</label><select id="cStatus">${["Aberta","Em inspeção","Concluída","Cancelada"].map(s => `<option ${s === data.status ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+      <div><button class="btn-verde" id="btnSalvarOp" style="margin:0">Salvar correção</button></div>
+    </div><div id="msgOp"></div>`;
+  $("btnSalvarOp").onclick = salvarOp;
+};
+async function salvarOp(){
+  const num = id => $(id).value === "" ? null : Number($(id).value);
+  if(!confirm(`Salvar a correção da OP ${opAtual.op}? Fica registrado no histórico.`)) return;
+  const { error } = await db.rpc("gestor_corrigir_op", { p_op: opAtual.id, p_quantidade: num("cQtd"), p_produzida: num("cProd"),
+    p_aprovadas: num("cAprov"), p_reprovadas: num("cReprov"), p_motivo_div: $("cMotDiv").value || null,
+    p_motivo_rep: $("cMotRep").value || null, p_status: $("cStatus").value });
+  msg("msgOp", error ? error.message : `OP ${opAtual.op} corrigida.`, error ? "erro" : "ok");
+  carregarAuditoria(); carregarIndicadores();
+}
+
+// ---------------------------------------------------------------
+// HISTÓRICO DE ALTERAÇÕES
+// ---------------------------------------------------------------
+async function carregarAuditoria(){
+  const { data } = await db.from("auditoria").select("*").order("quando", { ascending:false }).limit(50);
+  const resumo = a => {
+    if(!a.antes || !a.depois) return "";
+    return Object.keys(a.depois).filter(k => JSON.stringify(a.antes[k]) !== JSON.stringify(a.depois[k]))
+      .map(k => `${k}: ${a.antes[k] ?? "–"} → ${a.depois[k] ?? "–"}`).join("<br>");
+  };
+  $("tAud").innerHTML = `<tr><th>Quando</th><th>Usuário</th><th>Ação</th><th>Registro</th><th>O que mudou</th></tr>` +
+    ((data || []).map(a => `<tr><td>${dataHora(a.quando)}</td><td>${texto(a.usuario)}</td><td>${texto(a.acao)}</td><td>${texto(a.registro)}</td>
+      <td style="white-space:normal;font-size:12px">${a.acao.startsWith("excluir") ? "registro excluído" : texto(resumo(a)).replace(/&lt;br&gt;/g, "<br>")}</td></tr>`).join("")
+     || `<tr><td colspan="5"><i>Nenhuma alteração ainda.</i></td></tr>`);
+}
+
+protegerPagina(abrirGestao);
+</script>
+</body>
+</html>

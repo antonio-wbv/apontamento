@@ -403,7 +403,7 @@ function desenhar(){
       <td class="n">${horas(o.min)}</td><td class="n">${porPecaTempo(o)}</td><td class="n">${o.pecas ? brl(custoMin(o.min / o.pecas)) : "–"}</td></tr>`).join("");
 
   $("tLotes").innerHTML = `<tr><th>Liberado</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="n">Qtd OP</th><th class="n">Declarada</th><th class="n">Aprovadas</th><th class="n">Reprovadas</th><th class="n">Preço</th><th class="n">Valor</th><th class="n">Tempo</th><th class="n">Interrup.</th></tr>` +
-    resumo.lotesFiltro.slice(0,500).map(l => `<tr><td>${dataHora(l.concluida_em)}</td><td>${l.turno_conclusao}</td><td>${texto(l.ultima_maquina)}</td><td>${texto(l.op)}</td><td>${texto(l.peca)}</td>
+    resumo.lotesFiltro.slice(0,500).map(l => `<tr><td>${dataHora(l.concluida_em)}</td><td>${l.turno_conclusao}</td><td>${texto(l.ultima_maquina)}</td><td>${texto(l.op)}</td><td>${texto(l.peca)}${l.descricao ? `<br><small style="color:#475467">${texto(l.descricao)}</small>` : ""}</td>
       <td class="n">${l.quantidade}</td><td class="n">${l.quantidade_produzida}</td><td class="n"><b>${l.quantidade_aprovada ?? l.quantidade_produzida}</b></td><td class="n">${l.quantidade_reprovada ?? 0}</td>
       <td class="n">${l.preco === null ? '<span class="tag t-Interrompida">sem preço</span>' : brl(l.preco)}</td><td class="n">${brl(l.valor)}</td>
       <td class="n">${horas(l.minutos_total)}</td><td class="n">${l.interrupcoes}</td></tr>`).join("");
