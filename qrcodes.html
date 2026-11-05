@@ -20,7 +20,7 @@ body{font-family:Arial,sans-serif;text-align:center}
 <div id="lista"></div>
 <script>
 // O link de cada máquina = endereço deste site + /index.html?m=CODIGO
-const base = location.href.replace(/qrcodes\.html.*$/, "index.html");
+const base = new URL("index.html", location.href).href.split("?")[0];   // mesma pasta desta página
 const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
 db.from("maquinas").select("codigo,nome").eq("ativa", true).order("codigo").then(({ data }) => {
   for(const m of data){

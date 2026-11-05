@@ -131,7 +131,9 @@ async function abrirGestao(){
 // ACESSO RÁPIDO: todas as páginas do sistema
 // ---------------------------------------------------------------
 function desenharLinks(){
-  const base = location.href.replace(/gestao\.html.*$/, "");
+  // Endereço de cada página calculado a partir da pasta atual do site
+  // (funciona abrindo ".../gestao.html", ".../gestao" ou com ?parâmetros)
+  const endereco = u => new URL(u, location.href).href;
   const links = [
     ["PCP", "pcp.html", "Dashboard, fila e lançamento de OPs"],
     ["Qualidade", "qualidade.html", "Inspeção e liberação de lotes"],
@@ -143,7 +145,7 @@ function desenharLinks(){
     ["Guia de implantação", "https://claude.ai/artifact/NNSwgoPpqdQevSS3xb5oE6", "Passo a passo do sistema"]
   ];
   $("links").innerHTML = links.map(([n, u, d]) =>
-    `<a href="${u.startsWith("http") ? u : base + u}" target="_blank" rel="noopener">${texto(n)}<small>${texto(d)}</small></a>`).join("");
+    `<a href="${endereco(u)}" target="_blank" rel="noopener">${texto(n)}<small>${texto(d)}</small></a>`).join("");
 }
 
 // ---------------------------------------------------------------
