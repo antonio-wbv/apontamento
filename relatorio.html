@@ -53,6 +53,7 @@ window.onerror = function(m){
     <div class="kpi">Aguardando inspeção<b id="kInsp">0</b><small style="color:#475467">ainda fora do relatório</small></div>
     <div class="kpi">Tempo médio por peça<b id="kTempo">–</b></div>
     <div class="kpi">Interrupções<b id="kInt">0</b></div>
+    <div class="kpi">Horas paradas no período<b id="kParado" style="color:#b54708">–</b></div>
   </div>
 
   <!-- OEE -->
@@ -70,6 +71,25 @@ window.onerror = function(m){
   <div class="grade2">
     <div class="card"><h2>OEE por máquina</h2><div id="gMaq"></div></div>
     <div class="card"><h2>OEE por turno</h2><div id="gTurno"></div></div>
+  </div>
+
+  <!-- TEMPO PARADO -->
+  <div class="card">
+    <h2>Tempo parado no período</h2>
+    <div style="font-size:12px;color:#475467;margin-bottom:8px">
+      Conta só o tempo <b>planejado</b> (turnos de seg a sex, sem refeições, sem feriados). Parado = planejado − rodando, separado em:
+      <b>Interrupções</b> (do INTERROMPER até a próxima OP iniciar, pelo motivo informado), <b>Entre lotes</b> (do ENCERRAR LOTE até a próxima OP)
+      e <b>Sem apontamento</b> (turno sem nenhuma OP registrada).</div>
+    <div class="rolagem"><table id="tParadoMaq"></table></div>
+    <h2 style="margin-top:16px">Por motivo</h2>
+    <div class="rolagem"><table id="tParadoMotivo"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>Horas paradas por mês (últimos 6 meses)</h2>
+    <div style="font-size:12px;color:#475467;margin-bottom:6px">Horas planejadas sem OP rodando, por mês. Meses antes do primeiro apontamento do sistema não aparecem; o mês atual conta até agora.</div>
+    <div id="gParadoMes"></div>
+    <div class="rolagem" style="margin-top:10px"><table id="tParadoMes"></table></div>
   </div>
 
   <div class="card"><h2>Por máquina</h2><div class="rolagem"><table id="tMaq"></table></div></div>
@@ -168,7 +188,8 @@ async function filtrar(){
   });
   interrupcoes = sessoes.filter(a => a.fim && a.motivo_fim !== "Lote encerrado"
       && a.data_turno >= $("dIni").value && (turno === "Todos" || a.turno === turno));
-  calcular(); desenhar();
+  calcular(); calcularParadasPeriodo(); desenhar(); desenharParadasPeriodo();
+  calcularParadasMes();
 }
 
 // ---------------------------------------------------------------
@@ -428,6 +449,163 @@ function desenhar(){
 }
 
 // ---------------------------------------------------------------
+// TEMPO PARADO
+// 1) Janelas planejadas: turnos de dias úteis, sem as refeições, até agora.
+// 2) Para cada máquina: o que nas janelas tem OP rodando = rodando;
+//    o resto é parado, classificado pelo "buraco" entre um trecho e o próximo:
+//    - depois de INTERROMPER  -> motivo informado (ex.: Manutenção)
+//    - depois de ENCERRAR LOTE -> "Entre lotes"
+//    - sem trecho anterior     -> "Sem apontamento"
+// ---------------------------------------------------------------
+const ENTRE = "Entre lotes (sem OP)", SEMAP = "Sem apontamento";
+function janelasPlanejadas(ini, fim){
+  // "ini" e "fim" são DIAS DE TURNO: a noite de um dia (até 06:30 do seguinte) pertence a esse dia
+  const lista = [], limite = Date.now();
+  for(let d = new Date(ini.getFullYear(), ini.getMonth(), ini.getDate()); d < fim; d.setDate(d.getDate() + 1)){
+    if(!diaDeTurno(d)) continue;
+    for(const t of TURNOS){
+      // a janela do turno, recortada pelas refeições
+      let pedacos = [[d.getTime() + t.ini * 60000, d.getTime() + t.fim * 60000]];
+      for(const [pa, pb] of PAUSAS[t.nome] || []){
+        const A = d.getTime() + pa * 60000, B = d.getTime() + pb * 60000;
+        pedacos = pedacos.flatMap(([a, b]) => (B <= a || A >= b) ? [[a, b]] : [[a, A], [B, b]].filter(([x, y]) => y > x));
+      }
+      for(const [a, b] of pedacos){
+        const b2 = Math.min(b, limite);                 // não conta o futuro
+        if(b2 > a) lista.push({ a, b:b2, turno:t.nome });
+      }
+    }
+  }
+  return lista;
+}
+const sobrepor = (a1, b1, a2, b2) => Math.max(0, Math.min(b1, b2) - Math.max(a1, a2)) / 3600000;
+
+function analisarParadas(lista, ini, fim, maqs){
+  const agora = Date.now(), janelas = janelasPlanejadas(ini, fim), r = {};
+  for(const m of maqs){
+    const ss = lista.filter(x => x.maquina_codigo === m)
+                    .map(x => ({ a:new Date(x.inicio).getTime(), b:x.fim ? new Date(x.fim).getTime() : agora, motivo:x.motivo_fim }))
+                    .sort((x, y) => x.a - y.a);
+    // buracos entre um trecho e o próximo, com o motivo do trecho que terminou
+    const buracos = ss.map((x, i) => ({ a:x.b, b: i + 1 < ss.length ? ss[i + 1].a : agora,
+                                         motivo: x.motivo === "Lote encerrado" ? ENTRE : (x.motivo || "Interrompida") })).filter(x => x.b > x.a);
+    r[m] = {};
+    for(const j of janelas){
+      const t = (r[m][j.turno] ??= { plan:0, run:0, motivos:{} });
+      t.plan += (j.b - j.a) / 3600000;
+      const run = ss.reduce((acc, x) => acc + sobrepor(x.a, x.b, j.a, j.b), 0);
+      t.run += Math.min(run, (j.b - j.a) / 3600000);
+      let classificado = 0;
+      for(const g of buracos){
+        const h = sobrepor(g.a, g.b, j.a, j.b);
+        if(h > 0){ t.motivos[g.motivo] = (t.motivos[g.motivo] || 0) + h; classificado += h; }
+      }
+      const parado = Math.max(0, (j.b - j.a) / 3600000 - Math.min(run, (j.b - j.a) / 3600000));
+      if(parado - classificado > 0.001) t.motivos[SEMAP] = (t.motivos[SEMAP] || 0) + parado - classificado;
+    }
+  }
+  return r;      // r[máquina][turno] = { plan, run, motivos:{ motivo: horas } }
+}
+const somaMotivos = o => Object.values(o).reduce((a, v) => a + v, 0);
+
+async function calcularParadasMes(){
+  const maqs = maquinas.filter(m => !$("fMaq").value || m.codigo === $("fMaq").value).map(m => m.codigo);
+  const hoje = new Date(), ini6 = new Date(hoje.getFullYear(), hoje.getMonth() - 5, 1);
+  const lista = await buscarTudo(() => {
+    let q = db.from("vw_apontamentos").select("inicio,fim,motivo_fim,maquina_codigo")
+              .gte("inicio", new Date(ini6.getTime() - 3 * 86400000).toISOString()).order("inicio");
+    if($("fMaq").value) q = q.eq("maquina_codigo", $("fMaq").value);
+    return q;
+  });
+  // meses antes do primeiro apontamento do sistema não têm dados (não contam como parados)
+  const primeiro = lista.length ? new Date(lista[0].inicio) : new Date();
+  const diaPrimeiro = new Date(primeiro.getFullYear(), primeiro.getMonth(), primeiro.getDate());
+  const NOMES = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+  const meses = [];
+  for(let i = 0; i < 6; i++){
+    const a0 = new Date(ini6.getFullYear(), ini6.getMonth() + i, 1), b = new Date(a0.getFullYear(), a0.getMonth() + 1, 1);
+    if(b <= diaPrimeiro) continue;                                  // mês inteiro antes do sistema existir
+    const a = a0 < diaPrimeiro ? diaPrimeiro : a0;
+    const p = analisarParadas(lista, a, b, maqs), linha = { mes: `${NOMES[a0.getMonth()]}/${String(a0.getFullYear()).slice(2)}`, maq:{} };
+    for(const m of maqs){
+      const ts = Object.values(p[m] || {});
+      const plan = ts.reduce((x, t) => x + t.plan, 0), parado = ts.reduce((x, t) => x + somaMotivos(t.motivos), 0);
+      const interr = ts.reduce((x, t) => x + Object.entries(t.motivos).filter(([k]) => k !== ENTRE && k !== SEMAP).reduce((y, [, v]) => y + v, 0), 0);
+      linha.maq[m] = { plan, parado, interr };
+    }
+    meses.push(linha);
+  }
+  resumo.paradasMes = { meses, maqs };
+  desenharParadasMes();
+}
+
+function desenharParadasMes(){
+  const { meses, maqs } = resumo.paradasMes || { meses:[], maqs:[] };
+  const nome = c => maquinas.find(m => m.codigo === c)?.nome ?? c;
+  $("tParadoMes").innerHTML = `<tr><th>Mês</th>${maqs.map(m => `<th class="n">${texto(nome(m))} parada</th><th class="n">% do planejado</th><th class="n">em interrupções</th>`).join("")}<th class="n">Total parado</th></tr>` +
+    meses.map(l => `<tr><td><b>${l.mes}</b></td>${maqs.map(m => { const x = l.maq[m];
+      return `<td class="n"><b>${h1(x.parado)}</b></td><td class="n">${x.plan ? pct(x.parado / x.plan) : "–"}</td><td class="n">${h1(x.interr)}</td>`; }).join("")}
+      <td class="n"><b>${h1(maqs.reduce((a, m) => a + l.maq[m].parado, 0))}</b></td></tr>`).join("");
+  // gráfico: colunas por mês, uma cor por máquina
+  const cores = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"];
+  const W = 1000, H = 260, mg = { t:20, r:10, b:40, l:46 };
+  const max = Math.max(10, ...meses.flatMap(l => maqs.map(m => l.maq[m].parado)));
+  const topo = Math.ceil(max / 10) * 10, y = v => mg.t + (1 - v / topo) * (H - mg.t - mg.b), base = y(0);
+  const lg = (W - mg.l - mg.r) / meses.length, col = Math.min(24, (lg - 30) / maqs.length);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">`;
+  for(let i = 0; i <= 4; i++){ const v = topo * i / 4;
+    svg += `<line x1="${mg.l}" x2="${W - mg.r}" y1="${y(v)}" y2="${y(v)}" stroke="#e4e7ec"/><text x="${mg.l - 6}" y="${y(v) + 4}" font-size="11" fill="#475467" text-anchor="end">${Math.round(v)} h</text>`; }
+  meses.forEach((l, i) => {
+    const cx = mg.l + lg * (i + .5), x0 = cx - (col * maqs.length + 2 * (maqs.length - 1)) / 2;
+    maqs.forEach((m, j) => {
+      const v = l.maq[m].parado, x = x0 + j * (col + 2), top = y(v), r = Math.min(4, (base - top) / 2);
+      if(v > 0) svg += `<path d="M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + col - r} Q${x + col},${top} ${x + col},${top + r} V${base} Z" fill="${cores[j % 4]}"><title>${texto(nome(m))} · ${l.mes}: ${h1(v)}</title></path>`;
+      svg += `<text x="${x + col / 2}" y="${top - 5}" font-size="10.5" fill="#101828" text-anchor="middle">${Math.round(v)}</text>`;
+    });
+    svg += `<text x="${cx}" y="${base + 18}" font-size="12.5" font-weight="700" fill="#101828" text-anchor="middle">${l.mes}</text>`;
+  });
+  svg += `</svg>`;
+  $("gParadoMes").innerHTML = `<div class="viz"><div class="legenda">${maqs.map((m, j) => `<span><i style="background:${cores[j % 4]}"></i>${texto(nome(m))}</span>`).join("")}<span>· horas paradas por mês</span></div>${svg}</div>`;
+}
+
+function calcularParadasPeriodo(){
+  const maqs = maquinas.filter(m => !$("fMaq").value || m.codigo === $("fMaq").value).map(m => m.codigo);
+  const [y1,m1,d1] = $("dIni").value.split("-").map(Number), [y2,m2,d2] = $("dFim").value.split("-").map(Number);
+  const p = analisarParadas(sessoes, new Date(y1, m1-1, d1), new Date(y2, m2-1, d2 + 1), maqs);
+  const filtroT = t => $("fTurno").value === "Todos" || t === $("fTurno").value;
+  const linhas = [], motivos = {};
+  for(const m of maqs) for(const [t, v] of Object.entries(p[m] || {})){
+    if(!filtroT(t)) continue;
+    const interr = Object.entries(v.motivos).filter(([k]) => k !== ENTRE && k !== SEMAP).reduce((a, [, h]) => a + h, 0);
+    linhas.push({ maq:m, turno:t, plan:v.plan, run:v.run, parado:somaMotivos(v.motivos), interr, entre:v.motivos[ENTRE] || 0, semap:v.motivos[SEMAP] || 0 });
+    for(const [k, h] of Object.entries(v.motivos)){ motivos[k] ??= {}; motivos[k][m] = (motivos[k][m] || 0) + h; }
+  }
+  const ordemT = ["Manhã","Tarde","Noite"];
+  linhas.sort((a, b) => a.maq.localeCompare(b.maq) || ordemT.indexOf(a.turno) - ordemT.indexOf(b.turno));
+  resumo.paradas = { linhas, motivos, maqs };
+}
+
+function desenharParadasPeriodo(){
+  const { linhas, motivos, maqs } = resumo.paradas;
+  const nome = c => maquinas.find(m => m.codigo === c)?.nome ?? c;
+  const total = linhas.reduce((a, l) => a + l.parado, 0);
+  $("kParado").textContent = h1(total);
+  const linha = (rot, l, negrito) => `<tr${negrito ? ' style="font-weight:700;background:#f2f4f7"' : ""}><td>${rot}</td><td class="n">${h1(l.plan)}</td><td class="n">${h1(l.run)}</td>
+      <td class="n"><b>${h1(l.parado)}</b></td><td class="n">${l.plan ? pct(l.parado / l.plan) : "–"}</td><td class="n">${h1(l.interr)}</td><td class="n">${h1(l.entre)}</td><td class="n">${h1(l.semap)}</td></tr>`;
+  const somar = ls => ls.reduce((a, l) => ({ plan:a.plan + l.plan, run:a.run + l.run, parado:a.parado + l.parado, interr:a.interr + l.interr, entre:a.entre + l.entre, semap:a.semap + l.semap }),
+                                { plan:0, run:0, parado:0, interr:0, entre:0, semap:0 });
+  $("tParadoMaq").innerHTML = `<tr><th>Máquina / turno</th><th class="n">Planejado</th><th class="n">Rodando</th><th class="n">Parado</th><th class="n">% parado</th><th class="n">Interrupções</th><th class="n">Entre lotes</th><th class="n">Sem apontamento</th></tr>` +
+    (maqs.map(m => { const ls = linhas.filter(l => l.maq === m);
+       return ls.map(l => linha(`${texto(nome(m))} · ${l.turno}`, l)).join("") + linha(`${texto(nome(m))} – total`, somar(ls), true); }).join("") +
+     ["Manhã","Tarde","Noite"].filter(t => linhas.some(l => l.turno === t)).map(t => linha(`Todas as máquinas · ${t}`, somar(linhas.filter(l => l.turno === t)))).join("")
+     || `<tr><td colspan="8"><i>Sem tempo planejado no período.</i></td></tr>`);
+  const lm = Object.entries(motivos).map(([k, v]) => ({ k, v, t: somaMotivos(v) })).filter(x => x.t >= 0.01).sort((a, b) => b.t - a.t);
+  $("tParadoMotivo").innerHTML = `<tr><th>Motivo</th>${maqs.map(m => `<th class="n">${texto(nome(m))}</th>`).join("")}<th class="n">Total</th><th class="n">% do parado</th></tr>` +
+    (lm.map(x => `<tr><td>${texto(x.k)}</td>${maqs.map(m => `<td class="n">${h1(x.v[m] || 0)}</td>`).join("")}<td class="n"><b>${h1(x.t)}</b></td><td class="n">${total ? pct(x.t / total) : "–"}</td></tr>`).join("")
+     || `<tr><td colspan="${maqs.length + 3}"><i>Nenhuma parada.</i></td></tr>`);
+}
+
+// ---------------------------------------------------------------
 // GRÁFICO de colunas agrupadas: para cada máquina/turno, 3 colunas
 // (Disponibilidade, Performance, Qualidade) de 0 a 100% e o OEE escrito embaixo.
 // ---------------------------------------------------------------
@@ -552,6 +730,19 @@ $("btnPdf").onclick = async () => {
   tabela("Execução e OEE por turno",
     ["Turno","Lotes","Peças","% das peças","Peças perdidas","Custo perdas","Custo usinagem","Horas rodando","Horas planejadas","Disp.","Perf.","Qual.","OEE"],
     resumo.porTurno.map(r => [r.nome, r.lotes, q(r.pecas), pct(r.pctPecas), q(r.perdidas), brl(r.custoPerda), brl(r.hRun * HORA_MAQUINA), ...colOee(r)]), [1,2,3,4,5,6,7,8,9,10,11,12]);
+  if(resumo.paradas){
+    const nomeM = c => maquinas.find(m => m.codigo === c)?.nome ?? c;
+    tabela("Tempo parado por máquina e turno (horas planejadas)", ["Máquina","Turno","Planejado","Rodando","Parado","% parado","Interrupções","Entre lotes","Sem apontamento"],
+      resumo.paradas.linhas.map(l => [nomeM(l.maq), l.turno, h1(l.plan), h1(l.run), h1(l.parado), l.plan ? pct(l.parado / l.plan) : "–", h1(l.interr), h1(l.entre), h1(l.semap)]), [2,3,4,5,6,7,8]);
+    const lm = Object.entries(resumo.paradas.motivos).filter(([, v]) => somaMotivos(v) >= 0.01).map(([k, v]) => [k, ...resumo.paradas.maqs.map(m => h1(v[m] || 0)), h1(somaMotivos(v))]);
+    if(lm.length) tabela("Tempo parado por motivo", ["Motivo", ...resumo.paradas.maqs.map(nomeM), "Total"], lm, resumo.paradas.maqs.map((_, i) => i + 1).concat([resumo.paradas.maqs.length + 1]));
+  }
+  if(resumo.paradasMes){
+    const { meses, maqs } = resumo.paradasMes, nomeM = c => maquinas.find(m => m.codigo === c)?.nome ?? c;
+    tabela("Horas paradas por mês (últimos 6 meses)", ["Mês", ...maqs.flatMap(m => [nomeM(m) + " parada", "% planejado"]), "Total"],
+      meses.map(l => [l.mes, ...maqs.flatMap(m => [h1(l.maq[m].parado), l.maq[m].plan ? pct(l.maq[m].parado / l.maq[m].plan) : "–"]), h1(maqs.reduce((a, m) => a + l.maq[m].parado, 0))]),
+      maqs.flatMap((_, i) => [1 + i * 2, 2 + i * 2]).concat([1 + maqs.length * 2]));
+  }
   if(resumo.porOperador.length)
     tabela("Produção por operador (proporcional às horas)", ["Operador","Horas apontadas","Lotes","Peças","Peças/hora","Valor","Peças perdidas","Custo perdas"],
       resumo.porOperador.map(o => [o.nome, h1(o.horas), o.lotes, q(o.pecas), o.horas ? q(o.pecas / o.horas) : "–", brl(o.valor), q(o.perdidas), brl(o.custoPerda)]), [1,2,3,4,5,6,7]);
