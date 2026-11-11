@@ -376,11 +376,11 @@ function calcular(){
 // TELA
 // ---------------------------------------------------------------
 const pct = v => v == null ? "–" : (v * 100).toLocaleString("pt-BR", { maximumFractionDigits:1 }) + "%";
-const h1 = v => v.toLocaleString("pt-BR", { maximumFractionDigits:1 }) + " h";
+const h1 = v => fmtHoras(v);                                   // recebe horas
 const q = v => Number(v || 0).toLocaleString("pt-BR", { maximumFractionDigits:1 });   // quantidades proporcionais
-const porPecaTempo = o => o.pecas ? (o.min / o.pecas).toFixed(1) + " min" : "–";
+const porPecaTempo = o => o.pecas ? horas(o.min / o.pecas) : "–";            // tempo por peça, em horas
 const barra = v => v == null ? "" : `<div class="barra"><span style="width:${Math.min(100, v*100)}%"></span></div>`;
-const minPeca = v => v == null ? "–" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits:2 }) + " min";
+const minPeca = v => v == null ? "–" : horas(v);                              // tempo/peça (recebe minutos), em horas
 
 function desenhar(){
   const t = resumo.total, g = resumo.geral;
@@ -443,9 +443,9 @@ function desenhar(){
       <td class="n">${l.preco === null ? '<span class="tag t-Interrompida">sem preço</span>' : brl(l.preco)}</td><td class="n">${brl(l.valor)}</td>
       <td class="n">${horas(l.minutos_total)}</td><td class="n">${l.interrupcoes}</td></tr>`).join("");
 
-  $("tInt").innerHTML = `<tr><th>Início</th><th>Fim</th><th>Máquina</th><th>OP</th><th>Peça</th><th>Operador</th><th class="n">Minutos</th><th>Motivo</th></tr>` +
+  $("tInt").innerHTML = `<tr><th>Início</th><th>Fim</th><th>Máquina</th><th>OP</th><th>Peça</th><th>Operador</th><th class="n">Horas</th><th>Motivo</th></tr>` +
     interrupcoes.slice(0,500).map(a => `<tr><td>${dataHora(a.inicio)}</td><td>${dataHora(a.fim)}</td><td>${texto(a.maquina)}</td><td>${texto(a.op)}</td>
-      <td>${texto(a.peca)}</td><td>${texto(a.operador)}</td><td class="n">${Number(a.minutos)}</td><td>${texto(a.motivo_fim)}</td></tr>`).join("");
+      <td>${texto(a.peca)}</td><td>${texto(a.operador)}</td><td class="n">${horas(a.minutos)}</td><td>${texto(a.motivo_fim)}</td></tr>`).join("");
 }
 
 // ---------------------------------------------------------------
@@ -787,11 +787,11 @@ async function salvarPreco(id){
 
 // ---------- CSV ----------
 $("btnCsv").onclick = () => {
-  const cab = ["Liberado","Turno fim produção","Data liberação","Máquina","OP","Peça","Qtd OP","Declarada operador","Aprovadas","Reprovadas","Motivo divergência","Motivo reprovação","Custo perdido","Preço","Valor","Minutos","Interrupções"];
+  const cab = ["Liberado","Turno fim produção","Data liberação","Máquina","OP","Peça","Qtd OP","Declarada operador","Aprovadas","Reprovadas","Motivo divergência","Motivo reprovação","Custo perdido","Preço","Valor","Horas","Interrupções"];
   const num = v => v == null ? "" : String(v).replace(".", ",");
   const linhas = resumo.lotesFiltro.map(l => { const a = analisarLote(l); return [new Date(l.concluida_em).toLocaleString("pt-BR"), l.turno_fim_producao ?? "", l.data_turno_conclusao,
     l.ultima_maquina, l.op, l.peca, l.quantidade, l.quantidade_produzida, a.boas, a.reprovadas, l.motivo_divergencia ?? "", l.motivo_reprovacao ?? "",
-    num(a.custoPerda.toFixed(2)), num(l.preco), num(l.valor), num(l.minutos_total), l.interrupcoes].join(";"); });
+    num(a.custoPerda.toFixed(2)), num(l.preco), num(l.valor), num((Number(l.minutos_total) / 60).toFixed(1)), l.interrupcoes].join(";"); });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + [cab.join(";")].concat(linhas).join("\n")], { type:"text/csv" }));
   a.download = `lotes_${$("dIni").value}_a_${$("dFim").value}.csv`;

@@ -61,7 +61,7 @@ window.onerror = function(m){
       <div><label>Código da peça</label><input id="codigo" list="listaPecas" autocomplete="off" placeholder="Ex.: EX-025"></div>
       <div><label>Quantidade</label><input id="quantidade" type="number" min="1" inputmode="numeric"></div>
       <div><label>Máquina</label><select id="maquinaNova" class="selMaq"></select></div>
-      <div><label>Tempo previsto (min/peça)</label><input id="tempoPrevisto" type="number" min="0" step="0.1" inputmode="decimal" placeholder="opcional"></div>
+      <div><label>Tempo previsto (h/peça)</label><input id="tempoPrevisto" type="number" min="0" step="0.1" inputmode="decimal" placeholder="opcional"></div>
       <div><button class="btn-verde" id="btnLancar" style="margin:0">+ Lançar OP</button></div>
     </div>
     <div style="margin-top:10px">
@@ -187,7 +187,7 @@ function desenharFila(){
       <td><b>${texto(o.op)}</b></td><td>${texto(o.peca)}${o.descricao ? `<br><small style="color:#475467">${texto(o.descricao)}</small>` : ""}</td><td class="n">${o.quantidade}</td>
       <td><span class="tag t-${o.situacao.split(" ")[0]}">${o.situacao}</span>${o.situacao === "Em execução" ? " " + texto(o.ultima_maquina) : ""}</td>
       <td><select onchange="mudarMaquina(${o.id}, this.value)" style="padding:6px;font-size:14px">${opcoesMaquina(o.maquina_preferida_codigo)}</select></td>
-      <td class="n">${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min" : "–"}<br>${tagFonte(o.tempo_fonte)}</td>
+      <td class="n">${o.tempo_peca != null ? horas(o.tempo_peca) : "–"}<br>${tagFonte(o.tempo_fonte)}</td>
       <td class="n">${o.tempo_peca != null ? horas(o.minutos_restantes) : "–"}</td>
       <td class="n">${o.tempo_peca != null ? brl(custo(o.tempo_peca * o.quantidade)) : "–"}</td>
       <td><button class="btn-azul" ${btnPeq} onclick="reposicionar(${g}, ${v > 0 ? visiveis[v - 1].g : -1})" ${v === 0 ? "disabled" : ""}>▲</button>
@@ -271,19 +271,19 @@ async function carregarTempos(){
   const { data, error } = await db.from("vw_tempo_peca").select("*").order("codigo");
   if(error){ alert(error.message); return; }
   tempos = data;
-  $("tTempos").innerHTML = `<tr><th>Código</th><th>Previsto PCP (min/peça)</th><th></th><th class="n">Padrão real (min/peça)</th><th class="n">Lotes na média</th><th>Usado na fila</th><th class="n">Custo usinagem/peça</th></tr>` +
+  $("tTempos").innerHTML = `<tr><th>Código</th><th>Previsto PCP (h/peça)</th><th></th><th class="n">Padrão real (h/peça)</th><th class="n">Lotes na média</th><th>Usado na fila</th><th class="n">Custo usinagem/peça</th></tr>` +
     tempos.map(t => `<tr><td><b>${texto(t.codigo)}</b></td>
-      <td><input id="tp${t.catalogo_id}" type="number" min="0" step="0.1" value="${t.tempo_previsto ?? ""}" style="width:110px;padding:6px"></td>
+      <td><input id="tp${t.catalogo_id}" type="number" min="0" step="0.1" value="${t.tempo_previsto != null ? +(t.tempo_previsto / 60).toFixed(2) : ""}" style="width:110px;padding:6px"></td>
       <td><button class="btn-azul" ${btnPeq} onclick="salvarTempo(${t.catalogo_id})">Salvar</button></td>
-      <td class="n">${t.tempo_padrao != null ? Number(t.tempo_padrao).toLocaleString("pt-BR") : "–"}</td><td class="n">${t.lotes_base}</td>
-      <td>${t.tempo_usado != null ? Number(t.tempo_usado).toLocaleString("pt-BR") + " min " : ""}${tagFonte(t.fonte)}</td>
+      <td class="n">${t.tempo_padrao != null ? horas(t.tempo_padrao) : "–"}</td><td class="n">${t.lotes_base}</td>
+      <td>${t.tempo_usado != null ? horas(t.tempo_usado) + " " : ""}${tagFonte(t.fonte)}</td>
       <td class="n">${t.tempo_usado != null ? brl(custo(t.tempo_usado)) : "–"}</td></tr>`).join("");
   desenharTopPecas();
 }
 async function salvarTempo(id){
   const codigo = tempos.find(t => t.catalogo_id === id).codigo;
   const v = $("tp" + id).value;
-  const { error } = await db.rpc("definir_tempo_previsto", { p_codigo: codigo, p_minutos: v === "" ? null : Number(v) });
+  const { error } = await db.rpc("definir_tempo_previsto", { p_codigo: codigo, p_minutos: v === "" ? null : Number(v) * 60 });   // horas -> minutos
   if(error){ alert(error.message); return; }
   await carregarTempos(); carregarFila();
 }
@@ -330,8 +330,8 @@ async function statusErp(){
 $("codigo").oninput = () => {
   const t = tempos.find(x => x.codigo.toLowerCase() === $("codigo").value.trim().toLowerCase());
   $("dicaTempo").textContent = !t ? "Código novo: informe o tempo previsto para entrar na previsão da fila."
-    : t.fonte === "Padrão" ? `Este código já tem tempo padrão: ${Number(t.tempo_padrao).toLocaleString("pt-BR")} min/peça (últimos ${t.lotes_base} lotes). O previsto não será usado.`
-    : t.fonte === "Previsto PCP" ? `Ainda sem histórico. Tempo previsto atual: ${Number(t.tempo_previsto).toLocaleString("pt-BR")} min/peça.`
+    : t.fonte === "Padrão" ? `Este código já tem tempo padrão: ${horas(t.tempo_padrao)}/peça (últimos ${t.lotes_base} lotes). O previsto não será usado.`
+    : t.fonte === "Previsto PCP" ? `Ainda sem histórico. Tempo previsto atual: ${horas(t.tempo_previsto)}/peça.`
     : "Ainda sem histórico e sem tempo previsto: informe o tempo previsto.";
 };
 
@@ -409,7 +409,7 @@ function desenharPrevisao(){
         ${ls.map((o, i) => `<tr><td class="n">${i + 1}</td>
           <td><b>${texto(o.op)}</b> ${o.rodando ? '<span class="tag t-Em">rodando</span>' : ""}${o.automatica && !o.rodando ? ' <span class="tag t-Aguardando">auto</span>' : ""}</td>
           <td>${texto(o.peca)}${o.descricao ? `<br><small style="color:#475467">${texto(o.descricao)}</small>` : ""}</td><td class="n">${o.quantidade}</td>
-          <td class="n">${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min" : "–"} ${tagFonte(o.tempo_fonte)}</td>
+          <td class="n">${o.tempo_peca != null ? horas(o.tempo_peca) : "–"} ${tagFonte(o.tempo_fonte)}</td>
           <td class="n">${o.semTempo ? "?" : horas(o.minutos_restantes)}</td>
           <td>${o.rodando ? "em andamento" : dataCurta(o.inicio)}</td><td><b>${o.semTempo ? "?" : dataCurta(o.fim)}</b></td></tr>`).join("")
           || `<tr><td colspan="8"><i>Sem OPs na fila.</i></td></tr>`}
@@ -475,7 +475,7 @@ function desenharTopPecas(){
   const lista = tempos.filter(t => t.tempo_usado != null).sort((a, b) => b.tempo_usado - a.tempo_usado).slice(0, 10);
   const max = Math.max(1, ...lista.map(t => Number(t.tempo_usado)));
   $("topPecas").innerHTML = lista.length ? lista.map(t => barraH(t.codigo, t.tempo_usado / max,
-      `<b>${Number(t.tempo_usado).toLocaleString("pt-BR")} min/peça</b> · ${brl(custo(t.tempo_usado))}/peça · ${t.fonte === "Padrão" ? "padrão real" : "previsto"}`)).join("")
+      `<b>${horas(t.tempo_usado)}/peça</b> · ${brl(custo(t.tempo_usado))}/peça · ${t.fonte === "Padrão" ? "padrão real" : "previsto"}`)).join("")
     : "<i>Nenhuma peça com tempo ainda.</i>";
 }
 
@@ -536,7 +536,7 @@ function mostrarDica(e, k){
     ${o.rodando ? "Rodando agora" : "Início: " + dataCurta(o.inicio)}<br>
     Fim previsto: <b>${o.semTempo ? "sem tempo" : dataCurta(o.fim)}</b><br>
     Restante: ${o.semTempo ? "?" : horas(o.minutos_restantes)} · ${o.semTempo ? "" : brl(custo(o.minutos_restantes))}<br>
-    Tempo/peça: ${o.tempo_peca != null ? Number(o.tempo_peca).toLocaleString("pt-BR") + " min (" + o.tempo_fonte + ")" : "–"}`;
+    Tempo/peça: ${o.tempo_peca != null ? horas(o.tempo_peca) + " (" + o.tempo_fonte + ")" : "–"}`;
   t.classList.remove("oculto");
   t.style.left = Math.min(e.clientX + 14, innerWidth - 280) + "px"; t.style.top = (e.clientY + 14) + "px";
 }
@@ -573,7 +573,7 @@ $("btnLancar").onclick = async () => {
   if(!numero || !codigo || !(qtd > 0) || !descricao){ $("msg").innerHTML = `<div class="msg erro">Preencha OP, código, quantidade e descrição do item.</div>`; return; }
   $("btnLancar").disabled = true;
   const { error } = await db.rpc("criar_op", { p_numero: numero, p_codigo: codigo, p_quantidade: qtd, p_maquina: $("maquinaNova").value || null,
-                                                p_tempo_previsto: $("tempoPrevisto").value ? Number($("tempoPrevisto").value) : null,
+                                                p_tempo_previsto: $("tempoPrevisto").value ? Number($("tempoPrevisto").value) * 60 : null,   // horas -> minutos (o banco guarda em minutos)
                                                 p_descricao: descricao });
   $("btnLancar").disabled = false;
   if(error){ $("msg").innerHTML = `<div class="msg erro">${texto(error.message)}</div>`; return; }
